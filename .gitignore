@@ -3,3 +3,11 @@
 
 # Local optional Codex skills
 .agents/skills/ponytail/
+
+# Dependencies and build outputs
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Local FailSpec runtime artifacts
+.failspec/

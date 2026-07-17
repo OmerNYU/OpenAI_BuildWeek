@@ -1,0 +1,30 @@
+import type {
+  ExecutionResult,
+  InvestigationRequest,
+  ReproductionHypothesis
+} from "@failspec/contracts";
+
+export interface GeneratedTest {
+  content: string;
+  path?: string;
+}
+
+export interface GenerateTestInput {
+  request: InvestigationRequest;
+  hypothesis: ReproductionHypothesis;
+}
+
+export interface CodexAdapter {
+  analyze(request: InvestigationRequest): Promise<ReproductionHypothesis>;
+
+  generateTest(input: GenerateTestInput): Promise<GeneratedTest>;
+}
+
+export interface RunnerInput {
+  repositoryPath: string;
+  generatedTest: GeneratedTest;
+}
+
+export interface RunnerAdapter {
+  run(input: RunnerInput): Promise<ExecutionResult>;
+}
