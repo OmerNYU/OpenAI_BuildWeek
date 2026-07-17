@@ -1,0 +1,5 @@
+# Local development and Codex records
+.failspec-internal/
+
+# Local optional Codex skills
+.agents/skills/ponytail/
