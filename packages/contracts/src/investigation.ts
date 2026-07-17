@@ -77,3 +77,17 @@ export const investigationResultSchema = z.object({
   recommendedNextStep: z.string().optional()
 });
 export type InvestigationResult = z.infer<typeof investigationResultSchema>;
+
+export const investigationSchema = investigationResultSchema.extend({
+  request: investigationRequestSchema,
+  timeline: z.array(investigationTimelineEventSchema),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+export type Investigation = z.infer<typeof investigationSchema>;
+
+export const apiErrorResponseSchema = z.object({
+  error: z.string(),
+  details: z.unknown().optional()
+});
+export type ApiErrorResponse = z.infer<typeof apiErrorResponseSchema>;
