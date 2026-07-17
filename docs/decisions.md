@@ -63,3 +63,23 @@ Record only decisions confirmed by the team. Do not add speculative or unapprove
 - **Rationale:** Keep changes reviewed and verification-gated.
 - **Consequences:** Branches and pull requests are required for changes to `main`.
 - **Owners:** All contributors
+
+### Platform scaffold tooling
+
+- **Date:** 2026-07-17
+- **Decision:** Use npm workspaces with React and Vite for the frontend, Express for the backend, Vitest for unit tests, Supertest for server routes, Testing Library for web tests, and no monorepo orchestration framework.
+- **Context:** Establish the approved Milestone 0 platform scaffold.
+- **Alternatives considered:** Turborepo, Nx, alternate frontend/backend tools, and separate test stacks.
+- **Rationale:** Provide a small, familiar toolchain with direct workspace support.
+- **Consequences:** Build ordering is handled by root npm scripts; Turborepo and Nx are out of scope.
+- **Owners:** Person 1
+
+### Initial platform integration
+
+- **Date:** 2026-07-17
+- **Decision:** Use polling for initial progress updates and local JSON persistence behind a storage boundary.
+- **Context:** Enable the first local vertical slice without hosted infrastructure.
+- **Alternatives considered:** SSE, a database, and direct persistence coupling.
+- **Rationale:** Keep initial integration local, deterministic, and replaceable.
+- **Consequences:** Storage and progress transport can be evolved behind their boundaries later.
+- **Owners:** Person 1
