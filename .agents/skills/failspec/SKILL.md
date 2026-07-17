@@ -45,8 +45,8 @@ The content must be valid TypeScript and must:
 - include a user interaction and an assertion;
 - test the reported behavior without changing production code.
 
-If the caller reports malformed or structurally invalid output, return corrected JSON once. Do not retry CLI failures or infer a final verdict.
+If the generated-test response is malformed or structurally invalid, return corrected JSON once. If that corrected generated-test response is still invalid, stop and return the validation error. Do not retry analysis output or CLI failures.
 
 ## Handoff
 
-Return the hypothesis and generated test content to the orchestrator. The runner owns writing the test into the worktree, executing it, preserving evidence, and classifying the result as verified, partial, not reproduced, or an execution error.
+Return the hypothesis and generated test content to the orchestrator. The runner owns writing the test into the worktree, executing it, preserving execution output and artifacts, and classifying the result as verified, partial, not reproduced, or an execution error.
