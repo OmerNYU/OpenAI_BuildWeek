@@ -15,6 +15,7 @@ function createChildProcess() {
 
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
+  child.kill = vi.fn(() => true);
   return child;
 }
 
@@ -53,6 +54,44 @@ describe("createLocalCodexCliExecutor", () => {
       exitCode: 1,
       stdout: "",
       stderr: "codex command not found"
+    });
+  });
+
+  it("terminates Codex when it exceeds the timeout", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const child = createChildProcess();
+      spawn.mockReturnValue(child);
+      const executor = createLocalCodexCliExecutor("codex", 10);
+      const result = executor.execute({ cwd: "/tmp/example", prompt: "Return JSON." });
+
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(child.kill).toHaveBeenCalledOnce();
+      await expect(result).resolves.toEqual({
+        exitCode: 1,
+        stdout: "",
+        stderr: "Codex CLI timed out"
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("terminates Codex when output exceeds the limit", async () => {
+    const child = createChildProcess();
+    spawn.mockReturnValue(child);
+    const executor = createLocalCodexCliExecutor("codex", 120_000, 8);
+    const result = executor.execute({ cwd: "/tmp/example", prompt: "Return JSON." });
+
+    child.stdout.emit("data", Buffer.from("too much output"));
+
+    expect(child.kill).toHaveBeenCalledOnce();
+    await expect(result).resolves.toEqual({
+      exitCode: 1,
+      stdout: "",
+      stderr: "Codex CLI output exceeded 8 bytes"
     });
   });
 });

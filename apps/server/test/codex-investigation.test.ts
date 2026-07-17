@@ -1,6 +1,7 @@
+import type { CodexAdapter } from "@failspec/core";
 import { describe, expect, it } from "vitest";
+import { CodexInvestigationAdapter } from "../src/codex/adapter.js";
 import { CodexJsonlClient } from "../src/codex/client.js";
-import { runCodexInvestigation } from "../src/codex/investigation.js";
 
 const request = {
   repositoryPath: "/tmp/checkout-app",
@@ -10,26 +11,29 @@ const request = {
   actualBehavior: "The page does not show validation feedback."
 };
 
-const output = {
-  hypothesis: {
-    summary: "Checkout does not show the validation error.",
-    confidence: "high" as const,
-    relevantFiles: [
-      { path: "src/checkout.tsx", reason: "It renders the checkout form." }
-    ],
-    reproductionSteps: ["Open checkout.", "Submit an empty form."],
-    expectedFailureSignal: "The required-field message is missing.",
-    assumptions: ["The local app starts successfully."]
-  },
+const hypothesis = {
+  summary: "Checkout does not show the validation error.",
+  confidence: "high" as const,
+  relevantFiles: [
+    { path: "src/checkout.tsx", reason: "It renders the checkout form." }
+  ],
+  reproductionSteps: ["Open checkout.", "Submit an empty form."],
+  expectedFailureSignal: "The required-field message is missing.",
+  assumptions: ["The local app starts successfully."]
+};
+
+const analysis = {
+  hypothesis,
   evidence: [
     {
       sourcePath: "src/checkout.tsx",
       observation: "The submit handler does not render an error message."
     }
-  ],
-  generatedTestContent:
-    "import { expect, test } from '@playwright/test';\n\ntest('shows checkout validation', async ({ page }) => {\n  await page.goto('/checkout');\n  await expect(page.getByText('Required')).toBeVisible();\n});\n"
+  ]
 };
+
+const generatedTestContent =
+  "import { expect, test } from '@playwright/test';\n\ntest('shows checkout validation', async ({ page }) => {\n  await page.goto('/checkout');\n  await expect(page.getByText('Required')).toBeVisible();\n});\n";
 
 function jsonlMessage(value: unknown): string {
   return `${JSON.stringify({
@@ -38,49 +42,49 @@ function jsonlMessage(value: unknown): string {
   })}\n`;
 }
 
-describe("runCodexInvestigation", () => {
-  it("returns validated output from the first Codex response", async () => {
+describe("CodexInvestigationAdapter", () => {
+  it("implements separate analyze and generateTest operations", async () => {
     const calls: Array<{ cwd: string; prompt: string }> = [];
+    const responses = [analysis, { generatedTestContent }];
     const client = new CodexJsonlClient({
       async execute(input) {
         calls.push(input);
-        return { exitCode: 0, stdout: jsonlMessage(output), stderr: "" };
+        return { exitCode: 0, stdout: jsonlMessage(responses.shift()), stderr: "" };
       }
     });
+    const adapter: CodexAdapter = new CodexInvestigationAdapter(client);
 
-    await expect(runCodexInvestigation(client, request)).resolves.toEqual(output);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ cwd: request.repositoryPath });
-  });
-
-  it("retries once when the first response is not a valid Playwright test", async () => {
-    const calls: Array<{ cwd: string; prompt: string }> = [];
-    const client = new CodexJsonlClient({
-      async execute(input) {
-        calls.push(input);
-        const response = calls.length === 1
-          ? { ...output, generatedTestContent: "console.log('not a test');" }
-          : output;
-
-        return { exitCode: 0, stdout: jsonlMessage(response), stderr: "" };
-      }
+    await expect(adapter.analyze(request)).resolves.toEqual(hypothesis);
+    await expect(adapter.generateTest({ request, hypothesis })).resolves.toEqual({
+      content: generatedTestContent
     });
-
-    await expect(runCodexInvestigation(client, request)).resolves.toEqual(output);
     expect(calls).toHaveLength(2);
-    expect(calls[1]?.prompt).toContain("Your previous response was invalid");
+    expect(calls[0]).toMatchObject({ cwd: request.repositoryPath });
+    expect(calls[0]?.prompt).toContain("preflighted isolated worktree");
+    expect(calls[1]?.prompt).toContain("Generate exactly one minimal Playwright regression test.");
   });
 
-  it("does not retry a failed Codex CLI command", async () => {
-    let calls = 0;
+  it("retries generated test output once when it fails structural validation", async () => {
+    const calls: Array<{ cwd: string; prompt: string }> = [];
+    const responses = [
+      analysis,
+      { generatedTestContent: "console.log('not a test');" },
+      { generatedTestContent }
+    ];
     const client = new CodexJsonlClient({
-      async execute() {
-        calls += 1;
-        return { exitCode: 1, stdout: "", stderr: "Authentication failed" };
+      async execute(input) {
+        calls.push(input);
+        return { exitCode: 0, stdout: jsonlMessage(responses.shift()), stderr: "" };
       }
     });
+    const adapter = new CodexInvestigationAdapter(client);
 
-    await expect(runCodexInvestigation(client, request)).rejects.toThrow("Authentication failed");
-    expect(calls).toBe(1);
+    const foundHypothesis = await adapter.analyze(request);
+
+    await expect(adapter.generateTest({ request, hypothesis: foundHypothesis })).resolves.toEqual({
+      content: generatedTestContent
+    });
+    expect(calls).toHaveLength(3);
+    expect(calls[2]?.prompt).toContain("Your previous response was invalid");
   });
 });
