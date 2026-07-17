@@ -1,6 +1,9 @@
 # Local development and Codex records
 .failspec-internal/
 
+# IDE metadata
+.idea/
+
 # Local optional Codex skills
 .agents/skills/ponytail/
 
