@@ -1,7 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
-  testDir: "./tests/reference",
+  testDir: "./tests",
   timeout: 30_000,
   use: {
     baseURL: "http://127.0.0.1:3100"
@@ -9,6 +9,6 @@ export default defineConfig({
   webServer: {
     command: "npm run dev -- --hostname 127.0.0.1 --port 3100",
     port: 3100,
-    reuseExistingServer: !process.env.CI
+    reuseExistingServer: false
   }
 });

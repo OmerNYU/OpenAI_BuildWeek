@@ -29,6 +29,28 @@ npm run dev:web
 npm run dev:server
 ```
 
+## Mocked investigation API
+
+The backend currently provides synchronous deterministic mock orchestration for the first vertical slice:
+
+- `POST /api/investigations`
+- `GET /api/investigations/:id`
+
+Create an investigation with:
+
+```json
+{
+  "repositoryPath": "C:\\projects\\sample-app",
+  "bugTitle": "Checkout button does not complete purchase",
+  "bugDescription": "Submitting checkout leaves the user on the same page.",
+  "expectedBehavior": "The confirmation page should appear.",
+  "actualBehavior": "The page remains on checkout.",
+  "terminalLog": "Mock console output"
+}
+```
+
+The mock response reaches `verified` and includes an ordered timeline, deterministic hypothesis, generated test, execution result, verdict explanation, and recommended next step. Runtime records are stored as one JSON file per investigation under `.failspec/investigations/`.
+
 ## Verification
 
 ```powershell
@@ -40,4 +62,4 @@ npm run build
 
 ## Current scaffold limitations
 
-The scaffold does not yet implement investigation submission, progress polling, persistence, or results. Real Codex and Playwright execution are not implemented.
+The frontend does not yet implement submission, polling, or results. Real Codex repository analysis, Playwright execution, worktrees, and verdict classification are not implemented.

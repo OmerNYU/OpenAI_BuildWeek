@@ -9,7 +9,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test:reference": "playwright test"
+    "test:reference": "playwright test tests/reference",
+    "test:generated": "playwright test tests/generated"
   },
   "dependencies": {
     "next": "15.5.20",

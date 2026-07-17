@@ -10,7 +10,10 @@
     "dev": "tsx watch src/server.ts"
   },
   "dependencies": {
-    "express": "^5.0.0"
+    "@failspec/contracts": "file:../../packages/contracts",
+    "@failspec/core": "file:../../packages/core",
+    "express": "^5.0.0",
+    "typescript": "^5.0.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
