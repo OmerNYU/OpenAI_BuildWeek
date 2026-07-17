@@ -22,6 +22,8 @@ npm install
 - `packages/contracts`: shared TypeScript types and Zod schemas.
 - `packages/core`: investigation lifecycle and typed mock adapter boundaries.
 
+See [the Codex investigation workflow](docs/codex-workflow.md) for the real Codex adapter boundary and generated-test rules.
+
 ## Development
 
 ```powershell
@@ -62,4 +64,4 @@ npm run build
 
 ## Current scaffold limitations
 
-The frontend does not yet implement submission, polling, or results. Real Codex repository analysis, Playwright execution, worktrees, and verdict classification are not implemented.
+The frontend does not yet implement submission, polling, or results. The server uses deterministic mock adapters by default; the real Codex adapter is available for integration. Playwright execution, worktrees, and verdict classification are not implemented.
