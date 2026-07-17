@@ -87,4 +87,19 @@ describe("CodexInvestigationAdapter", () => {
     expect(calls).toHaveLength(3);
     expect(calls[2]?.prompt).toContain("Your previous response was invalid");
   });
+
+  it("does not retry invalid analysis output", async () => {
+    const calls: Array<{ cwd: string; prompt: string }> = [];
+    const responses = [{ hypothesis: {}, evidence: [] }, analysis];
+    const client = new CodexJsonlClient({
+      async execute(input) {
+        calls.push(input);
+        return { exitCode: 0, stdout: jsonlMessage(responses.shift()), stderr: "" };
+      }
+    });
+    const adapter = new CodexInvestigationAdapter(client);
+
+    await expect(adapter.analyze(request)).rejects.toThrow();
+    expect(calls).toHaveLength(1);
+  });
 });

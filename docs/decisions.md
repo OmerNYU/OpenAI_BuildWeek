@@ -83,3 +83,23 @@ Record only decisions confirmed by the team. Do not add speculative or unapprove
 - **Rationale:** Keep initial integration local, deterministic, and replaceable.
 - **Consequences:** Storage and progress transport can be evolved behind their boundaries later.
 - **Owners:** Person 1
+
+### Mock investigation persistence
+
+- **Date:** 2026-07-17
+- **Decision:** Store one JSON file per investigation and write it through a temporary file followed by rename.
+- **Context:** Persist the initial local backend vertical slice without a database.
+- **Alternatives considered:** A single shared file, direct writes, and a database.
+- **Rationale:** Keep records isolated and reduce exposure to partially written JSON.
+- **Consequences:** Local filesystem storage remains behind a typed store boundary.
+- **Owners:** Person 1
+
+### Mock investigation orchestration
+
+- **Date:** 2026-07-17
+- **Decision:** Run synchronous deterministic mock orchestration for the initial backend vertical slice.
+- **Context:** Return a polling-ready terminal record without queues or simulated background work.
+- **Alternatives considered:** Background jobs, timers, and asynchronous scheduling.
+- **Rationale:** Keep the first integration path deterministic and straightforward to test.
+- **Consequences:** The create endpoint may complete the mock workflow before returning.
+- **Owners:** Person 1

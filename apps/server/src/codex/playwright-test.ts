@@ -30,8 +30,16 @@ export function validateGeneratedPlaywrightTest(
   let testCalls = 0;
   let hasInteraction = false;
   let hasAssertion = false;
+  let hasShadowedTest = false;
 
   const visit = (node: ts.Node) => {
+    if (
+      (ts.isParameter(node) || ts.isVariableDeclaration(node)) &&
+      bindingUsesTestName(node.name, testNames)
+    ) {
+      hasShadowedTest = true;
+    }
+
     if (ts.isCallExpression(node)) {
       if (ts.isIdentifier(node.expression) && testNames.has(node.expression.text)) {
         testCalls += 1;
@@ -61,7 +69,9 @@ export function validateGeneratedPlaywrightTest(
   if (testNames.size === 0) {
     errors.push("Generated test must import test from @playwright/test");
   }
-  if (testCalls !== 1) {
+  if (hasShadowedTest) {
+    errors.push("Generated test must not shadow the Playwright test import");
+  } else if (testCalls !== 1) {
     errors.push("Generated test must declare exactly one Playwright test");
   }
   if (!hasInteraction) {
@@ -98,4 +108,14 @@ function importedNames(sourceFile: ts.SourceFile, importedName: string): Set<str
   }
 
   return names;
+}
+
+function bindingUsesTestName(name: ts.BindingName, testNames: Set<string>): boolean {
+  if (ts.isIdentifier(name)) {
+    return testNames.has(name.text);
+  }
+
+  return name.elements.some(
+    (element) => ts.isBindingElement(element) && bindingUsesTestName(element.name, testNames)
+  );
 }

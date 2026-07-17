@@ -39,15 +39,6 @@ const generatedTestOutputSchema = z.object({
 
 export const codexAnalysisOutputSchema = analysisOutputSchema.superRefine(validateEvidence);
 export const codexGeneratedTestOutputSchema = generatedTestOutputSchema;
-export const codexInvestigationOutputSchema = analysisOutputSchema
-  .extend(generatedTestOutputSchema.shape)
-  .superRefine(validateEvidence);
-
-export interface CodexInvestigationOutput {
-  hypothesis: ReproductionHypothesis;
-  evidence: Array<z.infer<typeof evidenceSchema>>;
-  generatedTestContent: string;
-}
 
 export interface CodexAnalysisOutput {
   hypothesis: ReproductionHypothesis;
@@ -64,8 +55,4 @@ export function parseCodexAnalysisOutput(input: unknown): CodexAnalysisOutput {
 
 export function parseCodexGeneratedTestOutput(input: unknown): CodexGeneratedTestOutput {
   return codexGeneratedTestOutputSchema.parse(input);
-}
-
-export function parseCodexInvestigationOutput(input: unknown): CodexInvestigationOutput {
-  return codexInvestigationOutputSchema.parse(input);
 }

@@ -42,4 +42,14 @@ describe("validateGeneratedPlaywrightTest", () => {
       ]
     });
   });
+
+  it("rejects a local parameter that shadows the Playwright test import", () => {
+    const content =
+      "import { expect, test } from '@playwright/test';\n\nfunction helper(test: () => void) {\n  test();\n}\n\nconst page = { goto() {} };\npage.goto();\nexpect(true);\n";
+
+    expect(validateGeneratedPlaywrightTest(content)).toEqual({
+      valid: false,
+      errors: ["Generated test must not shadow the Playwright test import"]
+    });
+  });
 });

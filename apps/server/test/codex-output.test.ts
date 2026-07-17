@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parseCodexInvestigationOutput } from "../src/codex/output.js";
+import {
+  parseCodexAnalysisOutput,
+  parseCodexGeneratedTestOutput
+} from "../src/codex/output.js";
 
-const validOutput = {
+const validAnalysis = {
   hypothesis: {
     summary: "Checkout does not show the validation error.",
     confidence: "high",
@@ -20,20 +23,24 @@ const validOutput = {
       sourcePath: "src/checkout.tsx",
       observation: "The submit handler does not render an error message."
     }
-  ],
-  generatedTestContent:
-    "import { expect, test } from '@playwright/test';\n\ntest('shows checkout validation', async ({ page }) => {\n  await page.goto('/checkout');\n  await page.getByRole('button', { name: 'Submit' }).click();\n  await expect(page.getByText('Required')).toBeVisible();\n});\n"
+  ]
 };
 
-describe("parseCodexInvestigationOutput", () => {
-  it("returns validated hypothesis, evidence, and generated test content", () => {
-    expect(parseCodexInvestigationOutput(validOutput)).toEqual(validOutput);
+describe("Codex output parsing", () => {
+  it("returns validated analysis output", () => {
+    expect(parseCodexAnalysisOutput(validAnalysis)).toEqual(validAnalysis);
+  });
+
+  it("returns validated generated test output", () => {
+    const generatedTest = { generatedTestContent: "test content" };
+
+    expect(parseCodexGeneratedTestOutput(generatedTest)).toEqual(generatedTest);
   });
 
   it("rejects evidence that does not reference a relevant file", () => {
     expect(() =>
-      parseCodexInvestigationOutput({
-        ...validOutput,
+      parseCodexAnalysisOutput({
+        ...validAnalysis,
         evidence: [{ sourcePath: "src/unrelated.ts", observation: "Unrelated." }]
       })
     ).toThrow("Evidence source path must be a relevant file");
