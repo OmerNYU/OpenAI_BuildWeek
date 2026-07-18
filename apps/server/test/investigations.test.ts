@@ -3,12 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type {
-  ExecutionResult,
-  Investigation,
-  InvestigationRequest,
-  ReproductionHypothesis
-} from "@failspec/contracts";
+import type { Investigation, InvestigationRequest, ReproductionHypothesis, RunnerOutput } from "@failspec/contracts";
 import {
   MockCodexAdapter,
   MockRunnerAdapter,
@@ -170,7 +165,7 @@ describe("investigation API", () => {
 
   it("preserves generated evidence when the runner fails", async () => {
     const runnerAdapter: RunnerAdapter = {
-      async run(_input: RunnerInput): Promise<ExecutionResult> {
+      async run(_input: RunnerInput): Promise<RunnerOutput> {
         void _input;
         throw new Error("runner failed");
       }

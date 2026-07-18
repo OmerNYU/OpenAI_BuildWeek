@@ -1,7 +1,7 @@
 import type {
-  ExecutionResult,
   InvestigationRequest,
-  ReproductionHypothesis
+  ReproductionHypothesis,
+  RunnerOutput
 } from "@failspec/contracts";
 
 export interface GeneratedTest {
@@ -26,5 +26,5 @@ export interface RunnerInput {
 }
 
 export interface RunnerAdapter {
-  run(input: RunnerInput): Promise<ExecutionResult>;
+  run(input: RunnerInput): Promise<RunnerOutput>;
 }

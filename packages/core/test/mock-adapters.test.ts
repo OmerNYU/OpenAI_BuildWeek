@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ExecutionResult, InvestigationRequest } from "@failspec/contracts";
+import type { ExecutionResult, InvestigationRequest, RunnerOutput } from "@failspec/contracts";
 import { MockCodexAdapter, MockRunnerAdapter } from "../src/mock-adapters.js";
 
 const request: InvestigationRequest = {
@@ -22,9 +22,14 @@ describe("mock adapter boundaries", () => {
     expect(firstHypothesis.summary).toBe("Mock hypothesis for the reported failure.");
     expect(firstTest).toEqual(secondTest);
     expect(firstTest.content).toContain("test('mock'");
+    const output = await new MockRunnerAdapter().run({
+      repositoryPath: request.repositoryPath,
+      generatedTest: firstTest
+    });
+    expect(output.evidence.artifactPaths).toEqual(output.execution.artifacts);
   });
 
-  it("accepts repository context and returns the configured execution result unchanged", async () => {
+  it("accepts legacy execution results and returns runner output", async () => {
     const result: ExecutionResult = {
       command: "mock command",
       exitCode: 1,
@@ -42,7 +47,45 @@ describe("mock adapter boundaries", () => {
     const firstRun = await runner.run({ repositoryPath: request.repositoryPath, generatedTest });
     const secondRun = await runner.run({ repositoryPath: request.repositoryPath, generatedTest });
 
-    expect(firstRun).toBe(result);
+    expect(firstRun.execution).toBe(result);
+    expect(firstRun.evidence).toEqual({
+      testStatus: "unknown",
+      consoleErrors: [],
+      pageErrors: [],
+      artifactPaths: ["trace.zip"]
+    });
     expect(secondRun).toEqual(firstRun);
+  });
+
+  it("returns configured evidence unchanged", async () => {
+    const result: RunnerOutput = {
+      execution: {
+        command: "mock command",
+        exitCode: 1,
+        timedOut: false,
+        stdout: "",
+        stderr: "failure",
+        durationMs: 1,
+        artifacts: []
+      },
+      evidence: {
+        testTitle: "mock",
+        testStatus: "failed",
+        assertionFailureMessage: "Expected true to be false.",
+        consoleErrors: [],
+        pageErrors: [],
+        artifactPaths: []
+      }
+    };
+
+    const codex = new MockCodexAdapter();
+    const hypothesis = await codex.analyze(request);
+    const generatedTest = await codex.generateTest({ request, hypothesis });
+    const output = await new MockRunnerAdapter(result).run({
+      repositoryPath: request.repositoryPath,
+      generatedTest
+    });
+
+    expect(output).toBe(result);
   });
 });
