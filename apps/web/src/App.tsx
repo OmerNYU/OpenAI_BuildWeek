@@ -15,31 +15,40 @@ export function App({ pollIntervalMs = defaultPollIntervalMs }: { pollIntervalMs
   const [formKey, setFormKey] = useState(0);
   const timerRef = useRef<number>();
   const pollAbortRef = useRef<AbortController>();
+  const runTokenRef = useRef(0);
   const investigationId = investigation?.id;
   const investigationStatus = investigation?.status;
 
-  const pollingActive = Boolean(investigation && !isTerminal(investigation.status) && !pollingError);
+  const hasNonTerminalInvestigation = Boolean(investigation && !isTerminal(investigation.status));
+  const shouldPoll = hasNonTerminalInvestigation && !pollingError;
 
   useEffect(() => {
-    if (!investigationId || !investigationStatus || isTerminal(investigationStatus) || pollingError) {
+    if (!investigationId || !investigationStatus || !shouldPoll) {
       return;
     }
 
     let cancelled = false;
+    const runToken = runTokenRef.current;
+    const expectedInvestigationId = investigationId;
     const schedulePoll = () => {
       timerRef.current = window.setTimeout(async () => {
         const controller = new AbortController();
         pollAbortRef.current = controller;
         try {
-          const next = await getInvestigation(investigationId, controller.signal);
-          if (!cancelled) {
-            setInvestigation(next);
-            if (!isTerminal(next.status)) {
-              schedulePoll();
-            }
+          const next = await getInvestigation(expectedInvestigationId, controller.signal);
+          if (cancelled || runToken !== runTokenRef.current) {
+            return;
+          }
+          if (next.id !== expectedInvestigationId) {
+            setPollingError("Unable to refresh investigation progress. Start another investigation to retry.");
+            return;
+          }
+          setInvestigation(next);
+          if (!isTerminal(next.status)) {
+            schedulePoll();
           }
         } catch (error) {
-          if (!cancelled && !(error instanceof DOMException && error.name === "AbortError")) {
+          if (!cancelled && runToken === runTokenRef.current && !(error instanceof DOMException && error.name === "AbortError")) {
             setPollingError(safeErrorMessage(error, "Unable to refresh investigation progress. Start another investigation to retry."));
           }
         } finally {
@@ -60,23 +69,31 @@ export function App({ pollIntervalMs = defaultPollIntervalMs }: { pollIntervalMs
       pollAbortRef.current?.abort();
       pollAbortRef.current = undefined;
     };
-  }, [investigationId, investigationStatus, pollIntervalMs, pollingError]);
+  }, [investigationId, investigationStatus, pollIntervalMs, shouldPoll]);
 
   async function submit(request: InvestigationRequest) {
+    const runToken = ++runTokenRef.current;
     setCreationError(undefined);
     setPollingError(undefined);
     setCreating(true);
     try {
       const created = await createInvestigation(request);
-      setInvestigation(created);
+      if (runToken === runTokenRef.current) {
+        setInvestigation(created);
+      }
     } catch (error) {
-      setCreationError(safeErrorMessage(error, "Unable to start the investigation. Try again."));
+      if (runToken === runTokenRef.current) {
+        setCreationError(safeErrorMessage(error, "Unable to start the investigation. Try again."));
+      }
     } finally {
-      setCreating(false);
+      if (runToken === runTokenRef.current) {
+        setCreating(false);
+      }
     }
   }
 
   function reset() {
+    runTokenRef.current += 1;
     pollAbortRef.current?.abort();
     if (timerRef.current !== undefined) {
       window.clearTimeout(timerRef.current);
@@ -99,7 +116,7 @@ export function App({ pollIntervalMs = defaultPollIntervalMs }: { pollIntervalMs
         <h2 id="bug-intake-heading">Bug intake</h2>
         <BugReportForm
           key={formKey}
-          disabled={creating || pollingActive}
+          disabled={creating || hasNonTerminalInvestigation}
           submissionError={creationError}
           onSubmit={submit}
         />

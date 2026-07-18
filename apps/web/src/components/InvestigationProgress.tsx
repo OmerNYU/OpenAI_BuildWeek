@@ -1,11 +1,10 @@
-import type { Investigation, InvestigationStatus } from "@failspec/contracts";
+import {
+  terminalInvestigationStatuses,
+  type Investigation,
+  type InvestigationStatus
+} from "@failspec/contracts";
 
-const terminalStatuses = new Set<InvestigationStatus>([
-  "verified",
-  "partial",
-  "not_reproduced",
-  "execution_error"
-]);
+const terminalStatuses = new Set<InvestigationStatus>(terminalInvestigationStatuses);
 
 export function isTerminal(status: InvestigationStatus): boolean {
   return terminalStatuses.has(status);
@@ -24,7 +23,7 @@ export function InvestigationProgress({ investigation, pollingError }: {
     <div className="investigation-progress">
       <p><strong>Investigation ID:</strong> {investigation.id}</p>
       <p role="status" aria-live="polite">
-        <strong>Status:</strong> {readableStatus(investigation.status)} — {terminal ? "Terminal" : "Processing"}
+        <strong>Status:</strong> {readableStatus(investigation.status)} ({terminal ? "Terminal" : "Processing"})
       </p>
       {pollingError ? <p className="form-error" role="alert">{pollingError}</p> : null}
       <ol className="timeline" aria-label="Investigation timeline">

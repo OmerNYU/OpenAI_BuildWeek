@@ -1,7 +1,13 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Investigation, InvestigationRequest, InvestigationStatus } from "@failspec/contracts";
+import {
+  terminalInvestigationStatuses,
+  type Investigation,
+  type InvestigationRequest,
+  type InvestigationStatus
+} from "@failspec/contracts";
 import { App } from "../src/App";
+import { isTerminal } from "../src/components/InvestigationProgress";
 
 const validRequest: InvestigationRequest = {
   repositoryPath: "C:/repos/checkout",
@@ -102,7 +108,11 @@ describe("App", () => {
     ]);
   });
 
-  it.each<InvestigationStatus>(["verified", "partial", "not_reproduced", "execution_error"])(
+  it("recognizes every shared terminal investigation status", () => {
+    expect(terminalInvestigationStatuses.every((status) => isTerminal(status))).toBe(true);
+  });
+
+  it.each(terminalInvestigationStatuses)(
     "stops polling when GET returns terminal status %s",
     async (status) => {
       vi.useFakeTimers();
@@ -139,6 +149,19 @@ describe("App", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("The investigation service returned an invalid response.");
   });
 
+  it("does not expose a non-2xx response body", async () => {
+    const sensitiveError = "Error: ENOENT C:\\Users\\secret\\repo at InvestigationService.run (...)";
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: sensitiveError }, 500));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe("Unable to start the investigation. Try again.");
+    expect(screen.queryByText(sensitiveError)).toBeNull();
+    expect(screen.queryByText(/C:\\Users\\secret\\repo/)).toBeNull();
+    expect(screen.queryByText(/InvestigationService\.run/)).toBeNull();
+  });
+
   it("shows a polling error while preserving the last investigation", async () => {
     vi.useFakeTimers();
     const created = makeInvestigation("analyzing");
@@ -151,6 +174,85 @@ describe("App", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(10); });
     expect(screen.getByText("Unable to reach the investigation service. Try again.")).toBeTruthy();
     expect(screen.getByText(created.id)).toBeTruthy();
+  });
+
+  it("keeps the form disabled after a polling failure until reset enables a fresh submission", async () => {
+    vi.useFakeTimers();
+    const created = makeInvestigation("analyzing");
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(created))
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(jsonResponse(makeInvestigation("verified")));
+    render(<App pollIntervalMs={10} />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    await flushPromises();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    expect(screen.getByRole("button", { name: "Start investigation" }).hasAttribute("disabled")).toBe(true);
+    for (const label of fieldLabels) {
+      expect(screen.getByLabelText(label).hasAttribute("disabled")).toBe(true);
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "Start another investigation" }));
+    expect(screen.getByRole("button", { name: "Start investigation" }).hasAttribute("disabled")).toBe(false);
+    expect((screen.getByLabelText("Repository path") as HTMLInputElement).disabled).toBe(false);
+    expect(screen.queryByText("Unable to reach the investigation service. Try again.")).toBeNull();
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+    await flushPromises();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(screen.getByText("Mock hypothesis")).toBeTruthy();
+  });
+
+  it("ignores an in-flight polling response after reset", async () => {
+    vi.useFakeTimers();
+    const created = makeInvestigation("analyzing");
+    let resolvePollingResponse: (response: Response) => void = () => {};
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(created))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolvePollingResponse = resolve; }));
+    render(<App pollIntervalMs={10} />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    await flushPromises();
+    await act(async () => {
+      vi.advanceTimersByTime(10);
+      await Promise.resolve();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole("button", { name: "Start another investigation" }));
+
+    await act(async () => { resolvePollingResponse(jsonResponse(makeInvestigation("verified"))); });
+    expect(screen.getByText("Submit a bug report to begin an investigation.")).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a polling response with a mismatched investigation ID", async () => {
+    vi.useFakeTimers();
+    const created = makeInvestigation("analyzing", ["created", "analyzing"], "investigation-a");
+    const mismatched = makeInvestigation("analyzing", ["created", "analyzing"], "investigation-b");
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(created))
+      .mockResolvedValueOnce(jsonResponse(mismatched));
+    render(<App pollIntervalMs={10} />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    await flushPromises();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    expect(screen.getByText(created.id)).toBeTruthy();
+    expect(screen.queryByText(mismatched.id)).toBeNull();
+    expect(screen.getByText("Unable to refresh investigation progress. Start another investigation to retry.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Start investigation" }).hasAttribute("disabled")).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("resets form and investigation state without reloading", async () => {
@@ -191,12 +293,23 @@ function fillRequiredFields(request: InvestigationRequest) {
   fireEvent.change(screen.getByLabelText("Actual behavior"), { target: { value: request.actualBehavior } });
 }
 
+const fieldLabels = [
+  "Repository path",
+  "Bug title",
+  "Bug description",
+  "Expected behavior",
+  "Actual behavior",
+  "Terminal log (optional)",
+  "Screenshot path (optional)"
+];
+
 function makeInvestigation(
   status: InvestigationStatus,
-  statuses: InvestigationStatus[] = ["created", status]
+  statuses: InvestigationStatus[] = ["created", status],
+  id = "0f3dbf27-7ee6-4d17-bcbc-b0f64e9c46b1"
 ): Investigation {
   return {
-    id: "0f3dbf27-7ee6-4d17-bcbc-b0f64e9c46b1",
+    id,
     request: validRequest,
     status,
     timeline: statuses.map((timelineStatus, index) => ({

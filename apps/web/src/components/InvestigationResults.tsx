@@ -17,7 +17,7 @@ export function InvestigationResults({ investigation }: { investigation?: Invest
           {investigation.hypothesis.relevantFiles.length ? (
             <ul>
               {investigation.hypothesis.relevantFiles.map((file) => (
-                <li key={file.path}><code>{file.path}</code> — {file.reason}</li>
+                <li key={file.path}><code>{file.path}</code>: {file.reason}</li>
               ))}
             </ul>
           ) : null}
