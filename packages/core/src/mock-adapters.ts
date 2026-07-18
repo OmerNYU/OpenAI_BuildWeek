@@ -49,7 +49,7 @@ const defaultRunnerOutput: RunnerOutput = {
     testStatus: "passed",
     consoleErrors: [],
     pageErrors: [],
-    artifactPaths: ["artifacts/mock-trace.zip"]
+    artifactPaths: defaultExecutionResult.artifacts
   }
 };
 

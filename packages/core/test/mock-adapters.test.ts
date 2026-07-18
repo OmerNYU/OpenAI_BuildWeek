@@ -22,6 +22,11 @@ describe("mock adapter boundaries", () => {
     expect(firstHypothesis.summary).toBe("Mock hypothesis for the reported failure.");
     expect(firstTest).toEqual(secondTest);
     expect(firstTest.content).toContain("test('mock'");
+    const output = await new MockRunnerAdapter().run({
+      repositoryPath: request.repositoryPath,
+      generatedTest: firstTest
+    });
+    expect(output.evidence.artifactPaths).toEqual(output.execution.artifacts);
   });
 
   it("accepts legacy execution results and returns runner output", async () => {
