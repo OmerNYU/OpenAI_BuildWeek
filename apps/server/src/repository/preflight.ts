@@ -1,13 +1,14 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { appendFile, lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { isAbsolute, join, relative } from "node:path";
 import type { RepositoryPreflightResult } from "@failspec/contracts";
 
 export const approvedScriptNames = ["dev", "test:generated"] as const;
 
 type ApprovedScriptName = (typeof approvedScriptNames)[number];
 type Failure = Extract<RepositoryPreflightResult, { status: "unsupported" | "failed" }>;
+type Framework = "next" | "vite";
 
 export interface NpmCommand {
   command: "npm";
@@ -16,6 +17,7 @@ export interface NpmCommand {
 
 export interface RepositoryCommandPolicy {
   repositoryPath: string;
+  framework: Framework;
   startScript: "dev";
   testScript: "test:generated";
 }
@@ -24,43 +26,93 @@ export type RepositoryCommandPolicyResult =
   | { status: "ready"; policy: RepositoryCommandPolicy }
   | Failure;
 
-export interface DependencyInstallPlan {
-  kind: "install" | "reuse";
-  command?: NpmCommand;
-  logPath: string;
+export type DependencyInstallPlan =
+  | { kind: "install"; command: NpmCommand; logPath: string }
+  | { kind: "reuse"; logPath: string }
+  | { kind: "unavailable"; reason: "missing_lockfile" | "unsafe_worktree_state" };
+
+export type DependencyInstallStateResult =
+  | { kind: "recorded" }
+  | { kind: "appended"; logPath: string }
+  | { kind: "unavailable"; reason: "missing_lockfile" | "unsafe_worktree_state" };
+
+export type DependencyInstallLogResult =
+  | { kind: "ready"; logPath: string }
+  | { kind: "unavailable"; reason: "unsafe_worktree_state" };
+
+export type GitCommandResult =
+  | { kind: "completed"; exitCode: number | null; output: string }
+  | { kind: "output" }
+  | { kind: "timeout" }
+  | { kind: "output_limit" }
+  | { kind: "failed" };
+
+export interface GitRunner {
+  run(
+    cwd: string,
+    args: readonly string[],
+    options: { timeoutMs: number; maxOutputBytes: number; stopOnOutput: boolean }
+  ): Promise<GitCommandResult>;
+}
+
+export interface PreflightOptions {
+  gitRunner?: GitRunner;
 }
 
 interface PackageJson {
-  packageManager?: string;
-  dependencies?: Record<string, string>;
-  devDependencies?: Record<string, string>;
-  scripts?: Record<string, string>;
+  packageManager?: unknown;
+  dependencies?: unknown;
+  devDependencies?: unknown;
+  scripts?: unknown;
+}
+
+interface ValidatedWorktreeState {
+  worktreePath: string;
+  statePath: string;
+  logPath: string;
 }
 
 const installStateDirectory = ".failspec";
 const installStateFile = "npm-install-state.json";
 const installLogFile = "npm-install.log";
+const gitTimeoutMs = 2_000;
+const gitRevParseOutputLimit = 4_096;
 
-export async function preflightRepository(repositoryPath: string): Promise<RepositoryPreflightResult> {
+export async function preflightRepository(
+  repositoryPath: string,
+  options: PreflightOptions = {}
+): Promise<RepositoryPreflightResult> {
   const canonicalPath = await canonicalDirectory(repositoryPath);
   if (!canonicalPath) {
     return failed("unsafe_path");
   }
 
-  const gitRoot = await git(canonicalPath, ["rev-parse", "--show-toplevel"]);
-  if (gitRoot.exitCode !== 0) {
-    return unsupported("not_git_repository");
+  const gitRunner = options.gitRunner ?? systemGitRunner;
+  const gitRoot = await gitRunner.run(canonicalPath, ["rev-parse", "--show-toplevel"], {
+    timeoutMs: gitTimeoutMs,
+    maxOutputBytes: gitRevParseOutputLimit,
+    stopOnOutput: false
+  });
+  if (gitRoot.kind !== "completed") {
+    return failed("inspection_failed");
   }
-  if (gitRoot.stdout.trim() !== canonicalPath) {
+  if (gitRoot.exitCode !== 0 || gitRoot.output.trim() !== canonicalPath) {
     return unsupported("not_git_repository");
   }
 
-  const status = await git(canonicalPath, ["status", "--porcelain", "--untracked-files=all"]);
-  if (status.exitCode !== 0) {
-    return failed("inspection_failed");
-  }
-  if (status.stdout.length > 0) {
+  const status = await gitRunner.run(canonicalPath, ["status", "--porcelain", "--untracked-files=normal"], {
+    timeoutMs: gitTimeoutMs,
+    maxOutputBytes: 1,
+    stopOnOutput: true
+  });
+  if (status.kind === "output") {
     return unsupported("dirty_repository");
+  }
+  if (status.kind === "completed" && status.output.length > 0) {
+    return unsupported("dirty_repository");
+  }
+  if (status.kind !== "completed" || status.exitCode !== 0) {
+    return failed("inspection_failed");
   }
 
   const packageJson = await readPackageJson(canonicalPath);
@@ -70,31 +122,40 @@ export async function preflightRepository(repositoryPath: string): Promise<Repos
   if (!(await isNpmRepository(packageJson, canonicalPath))) {
     return unsupported("unsupported_package_manager");
   }
-  if (!hasSupportedFramework(packageJson)) {
-    return unsupported("unsupported_framework");
-  }
+
   if (!(await hasPlaywrightSetup(canonicalPath, packageJson))) {
     return unsupported("playwright_not_configured");
   }
   if (!hasApprovedScripts(packageJson)) {
     return unsupported("unsupported_script");
   }
+  if (!detectFramework(packageJson)) {
+    return unsupported("unsupported_framework");
+  }
 
   return { status: "ready", repositoryPath: canonicalPath };
 }
 
 export async function createCommandPolicy(
-  repositoryPath: string
+  repositoryPath: string,
+  options: PreflightOptions = {}
 ): Promise<RepositoryCommandPolicyResult> {
-  const preflight = await preflightRepository(repositoryPath);
+  const preflight = await preflightRepository(repositoryPath, options);
   if (preflight.status !== "ready") {
     return preflight;
+  }
+
+  const packageJson = await readPackageJson(preflight.repositoryPath);
+  const framework = packageJson && detectFramework(packageJson);
+  if (!framework) {
+    return failed("inspection_failed");
   }
 
   return {
     status: "ready",
     policy: {
       repositoryPath: preflight.repositoryPath,
+      framework,
       startScript: "dev",
       testScript: "test:generated"
     }
@@ -111,9 +172,10 @@ export function buildStartCommand(policy: RepositoryCommandPolicy, port: number)
     throw new Error("Invalid port.");
   }
 
+  const hostFlag = policy.framework === "next" ? "--hostname" : "--host";
   return {
     command: "npm",
-    args: ["run", policy.startScript, "--", "--hostname", "127.0.0.1", "--port", String(port)]
+    args: ["run", policy.startScript, "--", hostFlag, "127.0.0.1", "--port", String(port)]
   };
 }
 
@@ -123,31 +185,71 @@ export function buildTestCommand(policy: RepositoryCommandPolicy): NpmCommand {
 }
 
 export async function planDependencyInstall(worktreePath: string): Promise<DependencyInstallPlan> {
-  const lockfile = await readFile(join(worktreePath, "package-lock.json"), "utf8").catch(() => undefined);
-  const logPath = join(worktreePath, installStateDirectory, installLogFile);
+  const state = await validatedWorktreeState(worktreePath);
+  if (!state) {
+    return unavailable("unsafe_worktree_state");
+  }
+
+  const lockfile = await readLockfile(state.worktreePath);
   if (!lockfile) {
-    return { kind: "install", command: buildInstallCommand(), logPath };
+    return unavailable("missing_lockfile");
   }
 
-  const statePath = join(worktreePath, installStateDirectory, installStateFile);
-  const state = await readFile(statePath, "utf8").catch(() => undefined);
-  if (state === createHash("sha256").update(lockfile).digest("hex")) {
-    return { kind: "reuse", logPath };
+  const recordedHash = await readFile(state.statePath, "utf8").catch(() => undefined);
+  if (recordedHash === lockfileHash(lockfile)) {
+    return { kind: "reuse", logPath: state.logPath };
   }
 
-  return { kind: "install", command: buildInstallCommand(), logPath };
+  return { kind: "install", command: buildInstallCommand(), logPath: state.logPath };
 }
 
-export async function recordDependencyInstall(worktreePath: string): Promise<void> {
-  const lockfile = await readFile(join(worktreePath, "package-lock.json"), "utf8");
-  const directory = join(worktreePath, installStateDirectory);
-  await mkdir(directory, { recursive: true });
-  await writeFile(
-    join(directory, installStateFile),
-    createHash("sha256").update(lockfile).digest("hex"),
-    "utf8"
-  );
+export async function initializeDependencyInstallLog(
+  worktreePath: string
+): Promise<DependencyInstallLogResult> {
+  const state = await validatedWorktreeState(worktreePath);
+  if (!state) {
+    return unavailable("unsafe_worktree_state");
+  }
+
+  await appendFile(state.logPath, "", "utf8");
+  return { kind: "ready", logPath: state.logPath };
 }
+
+export async function appendDependencyInstallLog(
+  worktreePath: string,
+  output: string
+): Promise<DependencyInstallStateResult> {
+  const initialized = await initializeDependencyInstallLog(worktreePath);
+  if (initialized.kind === "unavailable") {
+    return initialized;
+  }
+
+  await appendFile(initialized.logPath, output, "utf8");
+  return { kind: "appended", logPath: initialized.logPath };
+}
+
+export async function recordDependencyInstall(
+  worktreePath: string
+): Promise<DependencyInstallStateResult> {
+  const state = await validatedWorktreeState(worktreePath);
+  if (!state) {
+    return unavailable("unsafe_worktree_state");
+  }
+
+  const lockfile = await readLockfile(state.worktreePath);
+  if (!lockfile) {
+    return unavailable("missing_lockfile");
+  }
+
+  await writeFile(state.statePath, lockfileHash(lockfile), "utf8");
+  return { kind: "recorded" };
+}
+
+const systemGitRunner: GitRunner = {
+  run(cwd, args, options) {
+    return runGit(cwd, args, options);
+  }
+};
 
 async function canonicalDirectory(path: string): Promise<string | undefined> {
   try {
@@ -158,16 +260,77 @@ async function canonicalDirectory(path: string): Promise<string | undefined> {
   }
 }
 
+async function validatedWorktreeState(worktreePath: string): Promise<ValidatedWorktreeState | undefined> {
+  const canonicalWorktreePath = await canonicalDirectory(worktreePath);
+  if (!canonicalWorktreePath) {
+    return undefined;
+  }
+
+  const stateDirectory = join(canonicalWorktreePath, installStateDirectory);
+  let entry = await lstatOrUndefined(stateDirectory);
+  if (!entry) {
+    await mkdir(stateDirectory, { recursive: true });
+    entry = await lstatOrUndefined(stateDirectory);
+  }
+  if (!entry || entry.isSymbolicLink() || !entry.isDirectory()) {
+    return undefined;
+  }
+
+  const canonicalStateDirectory = await realpath(stateDirectory).catch(() => undefined);
+  if (!canonicalStateDirectory || !isInside(canonicalWorktreePath, canonicalStateDirectory)) {
+    return undefined;
+  }
+
+  const statePath = join(canonicalStateDirectory, installStateFile);
+  const logPath = join(canonicalStateDirectory, installLogFile);
+  if (!(await isSafeStateFile(statePath)) || !(await isSafeStateFile(logPath))) {
+    return undefined;
+  }
+
+  return { worktreePath: canonicalWorktreePath, statePath, logPath };
+}
+
+async function isSafeStateFile(path: string): Promise<boolean> {
+  const entry = await lstatOrUndefined(path);
+  return !entry || (!entry.isSymbolicLink() && entry.isFile());
+}
+
+async function lstatOrUndefined(path: string) {
+  try {
+    return await lstat(path);
+  } catch {
+    return undefined;
+  }
+}
+
+function isInside(root: string, candidate: string): boolean {
+  const path = relative(root, candidate);
+  return path.length > 0 && !path.startsWith("..") && !isAbsolute(path);
+}
+
+async function readLockfile(worktreePath: string): Promise<string | undefined> {
+  return readFile(join(worktreePath, "package-lock.json"), "utf8").catch(() => undefined);
+}
+
+function lockfileHash(lockfile: string): string {
+  return createHash("sha256").update(lockfile).digest("hex");
+}
+
 async function readPackageJson(repositoryPath: string): Promise<PackageJson | undefined> {
   try {
-    return JSON.parse(await readFile(join(repositoryPath, "package.json"), "utf8")) as PackageJson;
+    const parsed: unknown = JSON.parse(await readFile(join(repositoryPath, "package.json"), "utf8"));
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as PackageJson)
+      : undefined;
   } catch {
     return undefined;
   }
 }
 
 async function isNpmRepository(packageJson: PackageJson, repositoryPath: string): Promise<boolean> {
-  const manager = packageJson.packageManager?.split("@")[0];
+  const manager = typeof packageJson.packageManager === "string"
+    ? packageJson.packageManager.split("@")[0]
+    : undefined;
   if (manager && manager !== "npm") {
     return false;
   }
@@ -181,17 +344,35 @@ async function isNpmRepository(packageJson: PackageJson, repositoryPath: string)
     return false;
   }
 
-  return readFile(join(repositoryPath, "package-lock.json")).then(() => true).catch(() => false);
+  return Boolean(await readLockfile(repositoryPath));
 }
 
-function hasSupportedFramework(packageJson: PackageJson): boolean {
-  const dependencies = { ...packageJson.dependencies, ...packageJson.devDependencies };
-  return "next" in dependencies || ("react" in dependencies && "react-dom" in dependencies);
+function detectFramework(packageJson: PackageJson): Framework | undefined {
+  const dependencies = dependencyNames(packageJson);
+  const devScript = scriptValue(packageJson, "dev");
+  if (dependencies.has("next") && devScript?.includes("next")) {
+    return "next";
+  }
+  if (
+    dependencies.has("react") &&
+    dependencies.has("react-dom") &&
+    dependencies.has("vite") &&
+    devScript?.includes("vite")
+  ) {
+    return "vite";
+  }
+  return undefined;
+}
+
+function dependencyNames(packageJson: PackageJson): Set<string> {
+  return new Set([
+    ...Object.keys(asRecord(packageJson.dependencies)),
+    ...Object.keys(asRecord(packageJson.devDependencies))
+  ]);
 }
 
 async function hasPlaywrightSetup(repositoryPath: string, packageJson: PackageJson): Promise<boolean> {
-  const dependencies = { ...packageJson.dependencies, ...packageJson.devDependencies };
-  if (!("@playwright/test" in dependencies)) {
+  if (!dependencyNames(packageJson).has("@playwright/test")) {
     return false;
   }
 
@@ -205,13 +386,32 @@ async function hasPlaywrightSetup(repositoryPath: string, packageJson: PackageJs
 function hasApprovedScripts(packageJson: PackageJson): packageJson is PackageJson & {
   scripts: Record<ApprovedScriptName, string>;
 } {
-  return approvedScriptNames.every((script) => Boolean(packageJson.scripts?.[script]));
+  return approvedScriptNames.every((script) => Boolean(scriptValue(packageJson, script)));
+}
+
+function scriptValue(packageJson: PackageJson, script: string): string | undefined {
+  const value = asRecord(packageJson.scripts)[script];
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function assertCommandPolicy(policy: RepositoryCommandPolicy): void {
-  if (policy.startScript !== "dev" || policy.testScript !== "test:generated") {
+  if (
+    (policy.framework !== "next" && policy.framework !== "vite") ||
+    policy.startScript !== "dev" ||
+    policy.testScript !== "test:generated"
+  ) {
     throw new Error("Invalid command policy.");
   }
+}
+
+function unavailable<T extends "missing_lockfile" | "unsafe_worktree_state">(reason: T) {
+  return { kind: "unavailable" as const, reason };
 }
 
 function unsupported(code: Failure["failure"]["code"]): Failure {
@@ -222,14 +422,47 @@ function failed(code: Failure["failure"]["code"]): Failure {
   return { status: "failed", failure: { code } };
 }
 
-function git(cwd: string, args: readonly string[]): Promise<{ exitCode: number | null; stdout: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("git", ["-C", cwd, ...args], { shell: false });
-    let stdout = "";
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk;
+function runGit(
+  cwd: string,
+  args: readonly string[],
+  options: { timeoutMs: number; maxOutputBytes: number; stopOnOutput: boolean }
+): Promise<GitCommandResult> {
+  return new Promise((resolve) => {
+    const child = spawn("git", ["-C", cwd, ...args], {
+      shell: false,
+      stdio: ["ignore", "pipe", "ignore"]
     });
-    child.once("error", reject);
-    child.once("close", (exitCode) => resolve({ exitCode, stdout }));
+    let settled = false;
+    let output = "";
+    let outputBytes = 0;
+    const settle = (result: GitCommandResult) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
+    const timeout = setTimeout(() => {
+      child.kill();
+      settle({ kind: "timeout" });
+    }, options.timeoutMs);
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (options.stopOnOutput && chunk.length > 0) {
+        child.kill();
+        settle({ kind: "output" });
+        return;
+      }
+      outputBytes += chunk.length;
+      if (outputBytes > options.maxOutputBytes) {
+        child.kill();
+        settle({ kind: "output_limit" });
+        return;
+      }
+      output += chunk.toString("utf8");
+    });
+    child.once("error", () => settle({ kind: "failed" }));
+    child.once("close", (exitCode) => settle({ kind: "completed", exitCode, output }));
   });
 }
