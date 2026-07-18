@@ -1,4 +1,5 @@
 import type {
+  CodexAnalysisResult,
   InvestigationRequest,
   ReproductionHypothesis,
   RunnerOutput
@@ -15,7 +16,7 @@ export interface GenerateTestInput {
 }
 
 export interface CodexAdapter {
-  analyze(request: InvestigationRequest): Promise<ReproductionHypothesis>;
+  analyze(request: InvestigationRequest): Promise<CodexAnalysisResult>;
 
   generateTest(input: GenerateTestInput): Promise<GeneratedTest>;
 }

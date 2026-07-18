@@ -54,7 +54,7 @@ describe("CodexInvestigationAdapter", () => {
     });
     const adapter: CodexAdapter = new CodexInvestigationAdapter(client);
 
-    await expect(adapter.analyze(request)).resolves.toEqual(hypothesis);
+    await expect(adapter.analyze(request)).resolves.toEqual(analysis);
     await expect(adapter.generateTest({ request, hypothesis })).resolves.toEqual({
       content: generatedTestContent
     });
@@ -81,7 +81,7 @@ describe("CodexInvestigationAdapter", () => {
 
     const foundHypothesis = await adapter.analyze(request);
 
-    await expect(adapter.generateTest({ request, hypothesis: foundHypothesis })).resolves.toEqual({
+    await expect(adapter.generateTest({ request, hypothesis: foundHypothesis.hypothesis })).resolves.toEqual({
       content: generatedTestContent
     });
     expect(calls).toHaveLength(3);
@@ -98,6 +98,20 @@ describe("CodexInvestigationAdapter", () => {
       }
     });
     const adapter = new CodexInvestigationAdapter(client);
+
+    await expect(adapter.analyze(request)).rejects.toThrow();
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rejects analysis with a missing evidence field without retrying", async () => {
+    const calls: Array<{ cwd: string; prompt: string }> = [];
+    const client = new CodexJsonlClient({
+      async execute(input) {
+        calls.push(input);
+        return { exitCode: 0, stdout: jsonlMessage({ hypothesis }), stderr: "" };
+      }
+    });
+    const adapter: CodexAdapter = new CodexInvestigationAdapter(client);
 
     await expect(adapter.analyze(request)).rejects.toThrow();
     expect(calls).toHaveLength(1);

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  codexAnalysisResultSchema,
   executionResultSchema,
   generatedTestStagingResultSchema,
   investigationRequestSchema,
+  investigationSchema,
   repositoryPreflightResultSchema,
   runnerOutputSchema,
   verificationResultSchema,
@@ -20,6 +22,90 @@ describe("investigationRequestSchema", () => {
         actualBehavior: "Actual"
       }).success
     ).toBe(false);
+  });
+});
+
+describe("investigationSchema", () => {
+  it("accepts stored records created before analysis evidence was persisted", () => {
+    expect(
+      investigationSchema.safeParse({
+        id: "investigation-1",
+        status: "created",
+        request: {
+          repositoryPath: "C:/repos/example",
+          bugTitle: "Checkout fails",
+          bugDescription: "Checkout does not complete.",
+          expectedBehavior: "Checkout completes.",
+          actualBehavior: "Checkout remains open."
+        },
+        timeline: [
+          { status: "created", at: "2026-07-19T00:00:00.000Z", message: "Investigation created." }
+        ],
+        createdAt: "2026-07-19T00:00:00.000Z",
+        updatedAt: "2026-07-19T00:00:00.000Z"
+      }).success
+    ).toBe(true);
+  });
+});
+
+describe("Codex analysis contracts", () => {
+  const hypothesis = {
+    summary: "Checkout does not show the validation error.",
+    confidence: "high" as const,
+    relevantFiles: [{ path: "src/checkout.tsx", reason: "It renders the checkout form." }],
+    reproductionSteps: ["Open checkout.", "Submit an empty form."],
+    expectedFailureSignal: "The required-field message is missing.",
+    assumptions: ["The local app starts successfully."]
+  };
+
+  it("trims evidence values", () => {
+    expect(
+      codexAnalysisResultSchema.parse({
+        hypothesis,
+        evidence: [
+          {
+            sourcePath: " src/checkout.tsx ",
+            observation: " submit handler has no error state "
+          }
+        ]
+      }).evidence
+    ).toEqual([
+      {
+        sourcePath: "src/checkout.tsx",
+        observation: "submit handler has no error state"
+      }
+    ]);
+  });
+
+  it("rejects evidence observations longer than 2,000 characters", () => {
+    expect(
+      codexAnalysisResultSchema.safeParse({
+        hypothesis,
+        evidence: [{ sourcePath: "src/checkout.tsx", observation: "x".repeat(2_001) }]
+      }).success
+    ).toBe(false);
+  });
+
+  it("rejects analysis with a missing evidence field", () => {
+    expect(codexAnalysisResultSchema.safeParse({ hypothesis }).success).toBe(false);
+  });
+
+  it("accepts an empty evidence array", () => {
+    expect(codexAnalysisResultSchema.safeParse({ hypothesis, evidence: [] }).success).toBe(true);
+  });
+
+  it("rejects evidence source paths outside the relevant files", () => {
+    const result = codexAnalysisResultSchema.safeParse({
+      hypothesis,
+      evidence: [{ sourcePath: "src/unrelated.ts", observation: "This file is unrelated." }]
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toContainEqual(
+        expect.objectContaining({ message: "Evidence source path must be a relevant file" })
+      );
+    }
   });
 });
 

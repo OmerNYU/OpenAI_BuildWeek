@@ -6,9 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   Investigation,
   InvestigationRequest,
+  CodexAnalysisResult,
   ReproductionHypothesis,
   RunnerOutput
 } from "@failspec/contracts";
+import { codexAnalysisResultSchema } from "@failspec/contracts";
 import {
   MockCodexAdapter,
   MockRunnerAdapter,
@@ -54,6 +56,10 @@ afterEach(async () => {
 });
 
 describe("investigation API", () => {
+  it("keeps the mock analysis valid under the shared contract", () => {
+    expect(() => codexAnalysisResultSchema.parse(mockAnalysis())).not.toThrow();
+  });
+
   it("returns a created snapshot before the scheduled workflow persists a verified result", async () => {
     const scheduler = new ManualWorkflowScheduler();
     const codexAdapter = new MockCodexAdapter();
@@ -81,6 +87,7 @@ describe("investigation API", () => {
     expect(completed.body.status).toBe("verified");
     expect(completed.body.timeline.map((event: { status: string }) => event.status)).toEqual(successfulLifecycle);
     expect(completed.body.hypothesis.summary).toBe("Mock hypothesis for the reported failure.");
+    expect(completed.body.analysisEvidence).toEqual([]);
     expect(completed.body.generatedTestPath).toBe("tests/failspec.mock.spec.ts");
     expect(completed.body.generatedTestContent).toContain("test('mock'");
     expect(completed.body.execution).toEqual(mockExecution());
@@ -90,10 +97,10 @@ describe("investigation API", () => {
   it("persists an intermediate analyzing state while Codex analysis is still active", async () => {
     const scheduler = new ManualWorkflowScheduler();
     const analysisStarted = deferred<void>();
-    const hypothesis = deferred<ReproductionHypothesis>();
+    const hypothesis = deferred<CodexAnalysisResult>();
     const mockCodexAdapter = new MockCodexAdapter();
     const codexAdapter: CodexAdapter = {
-      async analyze(): Promise<ReproductionHypothesis> {
+      async analyze(): Promise<CodexAnalysisResult> {
         analysisStarted.resolve(undefined);
         return hypothesis.promise;
       },
@@ -120,13 +127,14 @@ describe("investigation API", () => {
     expect(intermediate.body.timeline.at(-1).status).toBe("analyzing");
     expect(intermediate.body.hypothesis).toBeUndefined();
 
-    hypothesis.resolve(mockHypothesis());
+    hypothesis.resolve(mockAnalysis());
     await workflow;
     const completed = await request(app).get(`/api/investigations/${created.body.id}`);
 
     expect(completed.body.status).toBe("verified");
     expect(completed.body.timeline.map((event: { status: string }) => event.status)).toEqual(successfulLifecycle);
     expect(completed.body.hypothesis).toEqual(mockHypothesis());
+    expect(completed.body.analysisEvidence).toEqual(mockAnalysis().evidence);
     expect(completed.body.generatedTestPath).toBe("tests/failspec.mock.spec.ts");
     expect(completed.body.generatedTestContent).toContain("test('mock'");
     expect(completed.body.execution).toEqual(mockExecution());
@@ -172,13 +180,23 @@ describe("investigation API", () => {
 
   it("reloads a completed JSON record through a new store instance", async () => {
     const scheduler = new ManualWorkflowScheduler();
-    const app = createTestApp({ scheduler });
+    const mockCodexAdapter = new MockCodexAdapter();
+    const codexAdapter: CodexAdapter = {
+      async analyze(): Promise<CodexAnalysisResult> {
+        return mockAnalysis();
+      },
+      generateTest(input: GenerateTestInput): Promise<GeneratedTest> {
+        return mockCodexAdapter.generateTest(input);
+      }
+    };
+    const app = createTestApp({ scheduler, codexAdapter });
     const created = await request(app).post("/api/investigations").send(validRequest);
 
     await scheduler.runAll();
     const reloaded = await new JsonInvestigationStore(storageDirectory).getById(created.body.id);
 
     expect(reloaded?.status).toBe("verified");
+    expect(reloaded?.analysisEvidence).toEqual(mockAnalysis().evidence);
     expect(reloaded?.generatedTestContent).toContain("test('mock'");
   });
 
@@ -193,7 +211,7 @@ describe("investigation API", () => {
   it("records execution_error without a hypothesis when analysis fails", async () => {
     const scheduler = new ManualWorkflowScheduler();
     const codexAdapter: CodexAdapter = {
-      async analyze(): Promise<ReproductionHypothesis> {
+      async analyze(): Promise<CodexAnalysisResult> {
         throw new Error("analysis failed");
       },
       async generateTest(_input: GenerateTestInput): Promise<GeneratedTest> {
@@ -216,8 +234,8 @@ describe("investigation API", () => {
   it("preserves the hypothesis when test generation fails", async () => {
     const scheduler = new ManualWorkflowScheduler();
     const codexAdapter: CodexAdapter = {
-      async analyze(): Promise<ReproductionHypothesis> {
-        return mockHypothesis();
+      async analyze(): Promise<CodexAnalysisResult> {
+        return mockAnalysis();
       },
       async generateTest(_input: GenerateTestInput): Promise<GeneratedTest> {
         void _input;
@@ -233,18 +251,28 @@ describe("investigation API", () => {
 
     expect(completed.body.status).toBe("execution_error");
     expect(completed.body.hypothesis.summary).toBe("Test hypothesis.");
+    expect(completed.body.analysisEvidence).toEqual(mockAnalysis().evidence);
     expect(completed.body.generatedTestContent).toBeUndefined();
   });
 
   it("preserves generated test information when the runner fails", async () => {
     const scheduler = new ManualWorkflowScheduler();
+    const mockCodexAdapter = new MockCodexAdapter();
+    const codexAdapter: CodexAdapter = {
+      async analyze(): Promise<CodexAnalysisResult> {
+        return mockAnalysis();
+      },
+      generateTest(input: GenerateTestInput): Promise<GeneratedTest> {
+        return mockCodexAdapter.generateTest(input);
+      }
+    };
     const runnerAdapter: RunnerAdapter = {
       async run(_input: RunnerInput): Promise<RunnerOutput> {
         void _input;
         throw new Error("runner failed");
       }
     };
-    const app = createTestApp({ scheduler, runnerAdapter });
+    const app = createTestApp({ scheduler, codexAdapter, runnerAdapter });
 
     const created = await request(app).post("/api/investigations").send(validRequest);
     expect(created.body.status).toBe("created");
@@ -253,6 +281,7 @@ describe("investigation API", () => {
 
     expect(completed.body.status).toBe("execution_error");
     expect(completed.body.hypothesis).toBeDefined();
+    expect(completed.body.analysisEvidence).toEqual(mockAnalysis().evidence);
     expect(completed.body.generatedTestPath).toBe("tests/failspec.mock.spec.ts");
     expect(completed.body.generatedTestContent).toContain("test('mock'");
     expect(completed.body.execution).toBeUndefined();
@@ -376,10 +405,27 @@ function mockHypothesis(): ReproductionHypothesis {
   return {
     summary: "Test hypothesis.",
     confidence: "medium",
-    relevantFiles: [],
+    relevantFiles: [
+      {
+        path: "src/checkout.tsx",
+        reason: "Contains the checkout submit handler under investigation."
+      }
+    ],
     reproductionSteps: ["Run the mock scenario."],
     expectedFailureSignal: "Mock failure signal.",
     assumptions: []
+  };
+}
+
+function mockAnalysis(): CodexAnalysisResult {
+  return {
+    hypothesis: mockHypothesis(),
+    evidence: [
+      {
+        sourcePath: "src/checkout.tsx",
+        observation: "The submit handler lacks an error state."
+      }
+    ]
   };
 }
 

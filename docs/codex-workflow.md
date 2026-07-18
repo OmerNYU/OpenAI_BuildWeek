@@ -32,7 +32,7 @@ Codex returns JSON with a reproduction hypothesis and file-backed evidence:
 
 Zod validates the response. Every evidence path must be one of the hypothesis's relevant files. Invalid analysis output is returned as an error and is not retried.
 
-Current limitation: `CodexInvestigationAdapter.analyze()` returns only the validated hypothesis. Its analysis evidence array is discarded, so it is not propagated through the shared adapter, persisted by the orchestrator, or handed to the runner.
+The validated analysis evidence is stored with the hypothesis and returned by the existing investigation API. The results UI may display this persisted evidence separately. Analysis evidence does not go to the runner and cannot establish a verdict.
 
 ## Test generation
 
@@ -53,6 +53,6 @@ The generated content must be valid TypeScript, import Playwright's `test`, decl
 
 ## Handoff and verdict
 
-The orchestrator moves the investigation from `hypothesis_ready` to `generating_test` and then `test_ready`. Person 3's runner writes the generated test into the worktree, executes Playwright, preserves execution output and artifacts, and classifies the result. It does not receive the discarded analysis evidence. A test failure or non-zero command alone is not proof of reproduction.
+The orchestrator moves the investigation from `hypothesis_ready` to `generating_test` and then `test_ready`. Person 3's runner writes the generated test into the worktree, executes Playwright, preserves execution output and artifacts, and classifies the result. Analysis evidence remains separate from runner evidence and execution artifacts. A test failure or non-zero command alone is not proof of reproduction.
 
 The supported verdicts are verified reproduction, partial reproduction, not reproduced, and execution error.

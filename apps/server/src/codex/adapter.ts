@@ -1,5 +1,5 @@
 import type { CodexAdapter, GenerateTestInput, GeneratedTest } from "@failspec/core";
-import type { InvestigationRequest, ReproductionHypothesis } from "@failspec/contracts";
+import type { CodexAnalysisResult, InvestigationRequest } from "@failspec/contracts";
 import { CodexJsonlClient } from "./client.js";
 import { parseCodexAnalysisOutput, parseCodexGeneratedTestOutput } from "./output.js";
 import { validateGeneratedPlaywrightTest } from "./playwright-test.js";
@@ -10,12 +10,12 @@ class InvalidCodexOutputError extends Error {}
 export class CodexInvestigationAdapter implements CodexAdapter {
   constructor(private readonly client: CodexJsonlClient) {}
 
-  async analyze(request: InvestigationRequest): Promise<ReproductionHypothesis> {
+  async analyze(request: InvestigationRequest): Promise<CodexAnalysisResult> {
     const output = await this.runOnce(request.repositoryPath, buildAnalysisPrompt(request), (response) =>
       parseCodexAnalysisOutput(JSON.parse(response))
     );
 
-    return output.hypothesis;
+    return output;
   }
 
   async generateTest(input: GenerateTestInput): Promise<GeneratedTest> {
