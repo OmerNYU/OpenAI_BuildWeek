@@ -10,6 +10,7 @@
     "dev": "vite"
   },
   "dependencies": {
+    "@failspec/contracts": "file:../../packages/contracts",
     "react": "^18.0.0",
     "react-dom": "^18.0.0"
   },
