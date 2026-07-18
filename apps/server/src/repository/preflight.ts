@@ -5,6 +5,11 @@ import { isAbsolute, join, relative } from "node:path";
 import type { RepositoryPreflightResult } from "@failspec/contracts";
 
 export const approvedScriptNames = ["dev", "test:generated"] as const;
+export const approvedGeneratedTestScript = "playwright test tests/generated";
+export const supportedFrameworkPolicies = {
+  next: { requiredDependencies: ["next", "react", "react-dom"], devScript: "next dev" },
+  vite: { requiredDependencies: ["react", "react-dom", "vite"], devScript: "vite" }
+} as const;
 
 type ApprovedScriptName = (typeof approvedScriptNames)[number];
 type Failure = Extract<RepositoryPreflightResult, { status: "unsupported" | "failed" }>;
@@ -196,7 +201,11 @@ export async function planDependencyInstall(worktreePath: string): Promise<Depen
   }
 
   const recordedHash = await readFile(state.statePath, "utf8").catch(() => undefined);
-  if (recordedHash === lockfileHash(lockfile)) {
+  const stateIsTracked = await isTrackedByRepository(state.worktreePath, installStateFile);
+  if (stateIsTracked === undefined) {
+    return unavailable("unsafe_worktree_state");
+  }
+  if (!stateIsTracked && recordedHash === lockfileHash(lockfile)) {
     return { kind: "reuse", logPath: state.logPath };
   }
 
@@ -239,6 +248,11 @@ export async function recordDependencyInstall(
   const lockfile = await readLockfile(state.worktreePath);
   if (!lockfile) {
     return unavailable("missing_lockfile");
+  }
+
+  const stateIsTracked = await isTrackedByRepository(state.worktreePath, installStateFile);
+  if (stateIsTracked !== false) {
+    return unavailable("unsafe_worktree_state");
   }
 
   await writeFile(state.statePath, lockfileHash(lockfile), "utf8");
@@ -312,6 +326,23 @@ async function readLockfile(worktreePath: string): Promise<string | undefined> {
   return readFile(join(worktreePath, "package-lock.json"), "utf8").catch(() => undefined);
 }
 
+async function isTrackedByRepository(worktreePath: string, fileName: string): Promise<boolean | undefined> {
+  const result = await systemGitRunner.run(worktreePath, [
+    "ls-files",
+    "--error-unmatch",
+    "--",
+    join(installStateDirectory, fileName)
+  ], {
+    timeoutMs: gitTimeoutMs,
+    maxOutputBytes: gitRevParseOutputLimit,
+    stopOnOutput: false
+  });
+  if (result.kind !== "completed") {
+    return undefined;
+  }
+  return result.exitCode === 0;
+}
+
 function lockfileHash(lockfile: string): string {
   return createHash("sha256").update(lockfile).digest("hex");
 }
@@ -350,14 +381,15 @@ async function isNpmRepository(packageJson: PackageJson, repositoryPath: string)
 function detectFramework(packageJson: PackageJson): Framework | undefined {
   const dependencies = dependencyNames(packageJson);
   const devScript = scriptValue(packageJson, "dev");
-  if (dependencies.has("next") && devScript?.includes("next")) {
+  if (
+    supportedFrameworkPolicies.next.requiredDependencies.every((dependency) => dependencies.has(dependency)) &&
+    devScript === supportedFrameworkPolicies.next.devScript
+  ) {
     return "next";
   }
   if (
-    dependencies.has("react") &&
-    dependencies.has("react-dom") &&
-    dependencies.has("vite") &&
-    devScript?.includes("vite")
+    supportedFrameworkPolicies.vite.requiredDependencies.every((dependency) => dependencies.has(dependency)) &&
+    devScript === supportedFrameworkPolicies.vite.devScript
   ) {
     return "vite";
   }
@@ -386,7 +418,10 @@ async function hasPlaywrightSetup(repositoryPath: string, packageJson: PackageJs
 function hasApprovedScripts(packageJson: PackageJson): packageJson is PackageJson & {
   scripts: Record<ApprovedScriptName, string>;
 } {
-  return approvedScriptNames.every((script) => Boolean(scriptValue(packageJson, script)));
+  return (
+    approvedScriptNames.every((script) => Boolean(scriptValue(packageJson, script))) &&
+    scriptValue(packageJson, "test:generated") === approvedGeneratedTestScript
+  );
 }
 
 function scriptValue(packageJson: PackageJson, script: string): string | undefined {

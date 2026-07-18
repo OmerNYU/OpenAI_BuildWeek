@@ -27,11 +27,11 @@ Record only decisions confirmed by the team. Do not add speculative or unapprove
 ### Supported MVP
 
 - **Date:** 2026-07-17
-- **Decision:** Support React or Next.js repositories, Playwright regression tests, and one generated regression test per investigation.
+- **Decision:** Support npm-based Next.js and Vite React repositories, Playwright regression tests, and one generated regression test per investigation.
 - **Context:** Keep the hackathon MVP narrowly scoped.
 - **Alternatives considered:** Broader frameworks, languages, or multiple generated tests.
 - **Rationale:** Focus implementation and verification on the approved workflow.
-- **Consequences:** Broader support remains pending.
+- **Consequences:** Create React App, Remix, Gatsby, Parcel, custom Webpack or Node startup servers, and other React toolchains are out of scope for the MVP. Next requires `next`, `react`, `react-dom`, and `"dev": "next dev"`; Vite React requires `vite`, `react`, `react-dom`, and `"dev": "vite"`. Both require npm, `package-lock.json`, existing Playwright configuration, and the approved generated-test script. Command strings, wrappers, shell chaining, and arbitrary script contents are rejected.
 - **Owners:** Persons 1, 2, and 3
 
 ### Verification outcomes

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   appendDependencyInstallLog,
   approvedScriptNames,
+  approvedGeneratedTestScript,
   buildInstallCommand,
   buildStartCommand,
   buildTestCommand,
@@ -15,6 +17,7 @@ import {
   planDependencyInstall,
   preflightRepository,
   recordDependencyInstall,
+  supportedFrameworkPolicies,
   type GitRunner
 } from "../src/repository/index.js";
 
@@ -96,9 +99,10 @@ describe("repository preflight", () => {
     });
 
     for (const scripts of [
-      { dev: true, "test:generated": "playwright test" },
-      { dev: " ", "test:generated": "playwright test" },
-      { dev: "next dev", "test:generated": "" }
+      { dev: true, "test:generated": approvedGeneratedTestScript },
+      { dev: " ", "test:generated": approvedGeneratedTestScript },
+      { dev: "next dev", "test:generated": "" },
+      { dev: "next dev", "test:generated": "echo generated test" }
     ]) {
       const repository = await createRepository({ scripts });
       await expect(preflightRepository(repository)).resolves.toMatchObject({
@@ -106,6 +110,26 @@ describe("repository preflight", () => {
         failure: { code: "unsupported_script" }
       });
     }
+  });
+
+  it("rejects scripts that merely mention a supported framework", async () => {
+    for (const [framework, scripts] of [
+      ["next", { dev: "echo next", "test:generated": approvedGeneratedTestScript }],
+      ["next", { dev: "next dev --turbo", "test:generated": approvedGeneratedTestScript }],
+      ["vite", { dev: "echo vite", "test:generated": approvedGeneratedTestScript }],
+      ["vite", { dev: "npm exec vite", "test:generated": approvedGeneratedTestScript }]
+    ] as const) {
+      const repository = await createRepository({ framework, scripts });
+      await expect(preflightRepository(repository)).resolves.toMatchObject({
+        status: "unsupported",
+        failure: { code: "unsupported_framework" }
+      });
+    }
+    expect(supportedFrameworkPolicies).toEqual({
+      next: { requiredDependencies: ["next", "react", "react-dom"], devScript: "next dev" },
+      vite: { requiredDependencies: ["react", "react-dom", "vite"], devScript: "vite" }
+    });
+    expect(approvedGeneratedTestScript).toBe("playwright test tests/generated");
   });
 
   it("bounds Git inspection and classifies timeout, capped output, and first status output", async () => {
@@ -211,6 +235,27 @@ describe("repository preflight", () => {
     });
   });
 
+  it("does not reuse a lockfile hash committed by the repository", async () => {
+    const worktreePath = await createRepository();
+    const lockfile = await readFile(join(worktreePath, "package-lock.json"), "utf8");
+    await mkdir(join(worktreePath, ".failspec"));
+    await writeFile(
+      join(worktreePath, ".failspec", "npm-install-state.json"),
+      createHash("sha256").update(lockfile).digest("hex"),
+      "utf8"
+    );
+    await commit(worktreePath, "commit fake install state");
+
+    await expect(planDependencyInstall(worktreePath)).resolves.toMatchObject({
+      kind: "install",
+      command: { command: "npm", args: ["ci"] }
+    });
+    await expect(recordDependencyInstall(worktreePath)).resolves.toEqual({
+      kind: "unavailable",
+      reason: "unsafe_worktree_state"
+    });
+  });
+
   it("rejects a repository-controlled .failspec symlink without writing to its target", async () => {
     const worktreePath = await createRepository();
     const victimPath = await createDirectory();
@@ -289,7 +334,7 @@ async function createRepository(options: RepositoryOptions = {}): Promise<string
   };
   const scripts = options.scripts ?? {
     dev: framework === "vite" ? "vite" : framework === "next" ? "next dev" : "react-scripts start",
-    "test:generated": "playwright test tests/generated"
+    "test:generated": approvedGeneratedTestScript
   };
   await writeFile(
     join(directory, "package.json"),
