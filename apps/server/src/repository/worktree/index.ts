@@ -30,12 +30,20 @@ export interface WorktreeOptions {
   /** Test-only root injection. Production roots are selected by platform policy. */
   testRootPath?: string;
   gitRunner?: WorktreeGitRunner;
+  /** Test-only failure and platform seams; never a runtime configuration surface. */
+  testHooks?: {
+    platform?: NodeJS.Platform;
+    environment?: NodeJS.ProcessEnv;
+    beforeMetadataUpdate?: () => void | Promise<void>;
+    beforePartialCleanup?: () => void | Promise<void>;
+  };
 }
 
 interface RootConfiguration {
   path: string;
   windowsApplicationPath?: string;
   testOnly: boolean;
+  platform: NodeJS.Platform;
 }
 
 export type WorktreeCleanupResult =
@@ -47,7 +55,8 @@ export async function prepareIsolatedWorktree(
   investigationId: string,
   options: WorktreeOptions = {}
 ): Promise<WorktreePreparationResult> {
-  const rootPath = await ownedRoot(await configuredRoot(options), true);
+  const rootConfiguration = await configuredRoot(options);
+  const rootPath = await ownedRoot(rootConfiguration, true);
   const sourcePath = await canonicalDirectory(sourceRepositoryPath);
   if (!rootPath || !isSafeInvestigationId(investigationId)) {
     return preparationFailure("invalid_destination");
@@ -68,7 +77,11 @@ export async function prepareIsolatedWorktree(
 
   const gitRunner = options.gitRunner ?? systemGitRunner;
   const sourceRoot = await gitRunner.run(sourcePath, ["rev-parse", "--show-toplevel"]);
-  if (sourceRoot.kind !== "completed" || sourceRoot.exitCode !== 0 || sourceRoot.output?.trim() !== sourcePath) {
+  if (
+    sourceRoot.kind !== "completed" ||
+    sourceRoot.exitCode !== 0 ||
+    await canonicalGitDirectory(sourceRoot.output, rootConfiguration?.platform) !== sourcePath
+  ) {
     return preparationFailure("creation_failed");
   }
 
@@ -88,7 +101,7 @@ export async function prepareIsolatedWorktree(
   }
 
   metadata.creationComplete = true;
-  if (!(await writeMetadata(metadataPath, metadata, false))) {
+  if (!(await writeMetadata(metadataPath, metadata, false, options.testHooks?.beforeMetadataUpdate))) {
     return preparationFailure("metadata_failed");
   }
 
@@ -99,7 +112,8 @@ export async function cleanupIsolatedWorktree(
   investigationId: string,
   options: WorktreeOptions = {}
 ): Promise<WorktreeCleanupResult> {
-  const rootPath = await ownedRoot(await configuredRoot(options), false);
+  const rootConfiguration = await configuredRoot(options);
+  const rootPath = await ownedRoot(rootConfiguration, false);
   if (!rootPath || !isSafeInvestigationId(investigationId)) {
     return cleanupFailure();
   }
@@ -113,13 +127,16 @@ export async function cleanupIsolatedWorktree(
     return cleanupFailure();
   }
 
-  const metadata = await readMetadata(metadataPath);
+  const metadataResult = await readMetadata(metadataPath);
   const destinationExists = await exists(worktreePath);
-  if (!metadata && !destinationExists) {
+  if (metadataResult.kind === "absent" && !destinationExists) {
     return { status: "cleaned" };
   }
+  if (metadataResult.kind !== "valid") {
+    return cleanupFailure();
+  }
+  const metadata = metadataResult.metadata;
   if (
-    !metadata ||
     metadata.investigationId !== investigationId ||
     metadata.worktreePath !== worktreePath ||
     !(await canonicalDirectory(metadata.sourceRepositoryPath))
@@ -136,16 +153,26 @@ export async function cleanupIsolatedWorktree(
 
   const gitRunner = options.gitRunner ?? systemGitRunner;
   const listed = await gitRunner.run(metadata.sourceRepositoryPath, ["worktree", "list", "--porcelain"]);
-  const recognized = listed.kind === "completed" && listed.exitCode === 0 && listed.output
-    ?.split("\n")
-    .some((line) => line === `worktree ${worktreePath}`);
+  const recognized = listed.kind === "completed" && listed.exitCode === 0 &&
+    await gitListsWorktree(listed.output, worktreePath, rootConfiguration?.platform);
 
   if (recognized) {
     const removed = await gitRunner.run(metadata.sourceRepositoryPath, ["worktree", "remove", "--force", worktreePath]);
     if (removed.kind !== "completed" || removed.exitCode !== 0) {
       return cleanupFailure();
     }
+    if (await exists(worktreePath)) {
+      return cleanupFailure();
+    }
   } else if (!metadata.creationComplete) {
+    await options.testHooks?.beforePartialCleanup?.();
+    const currentMetadata = await readMetadata(metadataPath);
+    if (
+      currentMetadata.kind !== "valid" ||
+      !matchesMetadata(currentMetadata.metadata, metadata)
+    ) {
+      return cleanupFailure();
+    }
     if (!(await removeOwnedDestination(rootPath, worktreePath))) {
       return cleanupFailure();
     }
@@ -153,26 +180,24 @@ export async function cleanupIsolatedWorktree(
     return cleanupFailure();
   }
 
-  if (await exists(worktreePath) && !(await removeOwnedDestination(rootPath, worktreePath))) {
-    return cleanupFailure();
-  }
   return (await removeMetadata(metadataPath)) ? { status: "cleaned" } : cleanupFailure();
 }
 
 async function configuredRoot(options: WorktreeOptions): Promise<RootConfiguration | undefined> {
+  const platform = options.testHooks?.platform ?? process.platform;
   if (options.testRootPath) {
-    return { path: options.testRootPath, testOnly: true };
+    return { path: options.testRootPath, testOnly: true, platform };
   }
-  if (process.platform === "win32") {
-    return windowsRoot();
+  if (platform === "win32") {
+    return windowsRoot(options.testHooks?.environment ?? process.env, platform);
   }
   return realpath(tmpdir())
-    .then((path) => ({ path: join(path, "failspec-worktrees"), testOnly: false }))
+    .then((path) => ({ path: join(path, "failspec-worktrees"), testOnly: false, platform }))
     .catch(() => undefined);
 }
 
-async function windowsRoot(): Promise<RootConfiguration | undefined> {
-  const localAppData = process.env.LOCALAPPDATA;
+async function windowsRoot(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): Promise<RootConfiguration | undefined> {
+  const localAppData = environment.LOCALAPPDATA;
   if (!localAppData || !isAbsolute(localAppData) || resolve(localAppData) !== localAppData) {
     return undefined;
   }
@@ -197,7 +222,8 @@ async function windowsRoot(): Promise<RootConfiguration | undefined> {
     return {
       path: join(canonicalApplicationPath, "worktrees"),
       windowsApplicationPath: canonicalApplicationPath,
-      testOnly: false
+      testOnly: false,
+      platform
     };
   } catch {
     return undefined;
@@ -226,7 +252,7 @@ async function ownedRoot(configuration: RootConfiguration | undefined, create: b
     if (configuration.windowsApplicationPath) {
       return isInside(configuration.windowsApplicationPath, canonicalPath) ? canonicalPath : undefined;
     }
-    return (process.platform === "win32" && configuration.testOnly) || isPrivateToCurrentUser(await stat(configuration.path))
+    return (configuration.platform === "win32" && configuration.testOnly) || isPrivateToCurrentUser(await stat(configuration.path))
       ? canonicalPath
       : undefined;
   } catch {
@@ -250,6 +276,31 @@ async function canonicalDirectory(path: string): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+async function canonicalGitDirectory(output: string | undefined, platform = process.platform): Promise<string | undefined> {
+  if (!output) {
+    return undefined;
+  }
+  try {
+    const reportedPath = output.trim().replace(/[\\/]/g, platform === "win32" ? sep : "/");
+    const canonicalPath = await realpath(reportedPath);
+    return (await stat(canonicalPath)).isDirectory() ? canonicalPath : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function gitListsWorktree(output: string | undefined, worktreePath: string, platform = process.platform): Promise<boolean> {
+  if (!output) {
+    return false;
+  }
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith("worktree ") && await canonicalGitDirectory(line.slice("worktree ".length), platform) === worktreePath) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function hasCanonicalUnsymlinkedPath(path: string): Promise<boolean> {
@@ -296,7 +347,12 @@ async function removeOwnedDestination(rootPath: string, worktreePath: string): P
   return !(await exists(worktreePath));
 }
 
-async function writeMetadata(path: string, metadata: OwnershipMetadata, exclusive: boolean): Promise<boolean> {
+async function writeMetadata(
+  path: string,
+  metadata: OwnershipMetadata,
+  exclusive: boolean,
+  beforeUpdate?: () => void | Promise<void>
+): Promise<boolean> {
   const serialized = JSON.stringify(metadata);
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
   try {
@@ -307,6 +363,7 @@ async function writeMetadata(path: string, metadata: OwnershipMetadata, exclusiv
       if (!entry.isFile()) {
         return false;
       }
+      await beforeUpdate?.();
     }
     const handle = await open(
       exclusive ? path : temporaryPath,
@@ -325,14 +382,19 @@ async function writeMetadata(path: string, metadata: OwnershipMetadata, exclusiv
   }
 }
 
-async function readMetadata(path: string): Promise<OwnershipMetadata | undefined> {
+type MetadataReadResult =
+  | { kind: "absent" }
+  | { kind: "invalid" }
+  | { kind: "valid"; metadata: OwnershipMetadata };
+
+async function readMetadata(path: string): Promise<MetadataReadResult> {
   try {
     const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     const entry = await handle.stat();
     const content = await handle.readFile("utf8");
     await handle.close();
     if (!entry.isFile()) {
-      return undefined;
+      return { kind: "invalid" };
     }
     const parsed: unknown = JSON.parse(content);
     if (
@@ -340,7 +402,7 @@ async function readMetadata(path: string): Promise<OwnershipMetadata | undefined
       parsed === null ||
       Array.isArray(parsed)
     ) {
-      return undefined;
+      return { kind: "invalid" };
     }
     const candidate = parsed as Record<string, unknown>;
     if (
@@ -349,12 +411,23 @@ async function readMetadata(path: string): Promise<OwnershipMetadata | undefined
       typeof candidate.worktreePath !== "string" ||
       typeof candidate.creationComplete !== "boolean"
     ) {
-      return undefined;
+      return { kind: "invalid" };
     }
-    return parsed as OwnershipMetadata;
-  } catch {
-    return undefined;
+    return { kind: "valid", metadata: parsed as OwnershipMetadata };
+  } catch (error: unknown) {
+    return isMissingFileError(error) ? { kind: "absent" } : { kind: "invalid" };
   }
+}
+
+function matchesMetadata(current: OwnershipMetadata, expected: OwnershipMetadata): boolean {
+  return current.investigationId === expected.investigationId &&
+    current.sourceRepositoryPath === expected.sourceRepositoryPath &&
+    current.worktreePath === expected.worktreePath &&
+    current.creationComplete === expected.creationComplete;
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
 async function removeMetadata(path: string): Promise<boolean> {
