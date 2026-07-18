@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  codexAnalysisResultSchema,
   executionResultSchema,
   generatedTestStagingResultSchema,
   investigationRequestSchema,
@@ -18,6 +19,45 @@ describe("investigationRequestSchema", () => {
         bugDescription: "Description",
         expectedBehavior: "Expected",
         actualBehavior: "Actual"
+      }).success
+    ).toBe(false);
+  });
+});
+
+describe("Codex analysis contracts", () => {
+  const hypothesis = {
+    summary: "Checkout does not show the validation error.",
+    confidence: "high" as const,
+    relevantFiles: [{ path: "src/checkout.tsx", reason: "It renders the checkout form." }],
+    reproductionSteps: ["Open checkout.", "Submit an empty form."],
+    expectedFailureSignal: "The required-field message is missing.",
+    assumptions: ["The local app starts successfully."]
+  };
+
+  it("trims evidence values", () => {
+    expect(
+      codexAnalysisResultSchema.parse({
+        hypothesis,
+        evidence: [
+          {
+            sourcePath: " src/checkout.tsx ",
+            observation: " submit handler has no error state "
+          }
+        ]
+      }).evidence
+    ).toEqual([
+      {
+        sourcePath: "src/checkout.tsx",
+        observation: "submit handler has no error state"
+      }
+    ]);
+  });
+
+  it("rejects evidence observations longer than 2,000 characters", () => {
+    expect(
+      codexAnalysisResultSchema.safeParse({
+        hypothesis,
+        evidence: [{ sourcePath: "src/checkout.tsx", observation: "x".repeat(2_001) }]
       }).success
     ).toBe(false);
   });

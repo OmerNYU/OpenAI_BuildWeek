@@ -11,15 +11,16 @@ const request: InvestigationRequest = {
 };
 
 describe("mock adapter boundaries", () => {
-  it("returns a deterministic hypothesis and generated test", async () => {
+  it("returns deterministic analysis evidence and generated test", async () => {
     const adapter = new MockCodexAdapter();
     const firstHypothesis = await adapter.analyze(request);
     const secondHypothesis = await adapter.analyze(request);
-    const firstTest = await adapter.generateTest({ request, hypothesis: firstHypothesis });
-    const secondTest = await adapter.generateTest({ request, hypothesis: firstHypothesis });
+    const firstTest = await adapter.generateTest({ request, hypothesis: firstHypothesis.hypothesis });
+    const secondTest = await adapter.generateTest({ request, hypothesis: firstHypothesis.hypothesis });
 
     expect(firstHypothesis).toEqual(secondHypothesis);
-    expect(firstHypothesis.summary).toBe("Mock hypothesis for the reported failure.");
+    expect(firstHypothesis.hypothesis.summary).toBe("Mock hypothesis for the reported failure.");
+    expect(firstHypothesis.evidence).toEqual([]);
     expect(firstTest).toEqual(secondTest);
     expect(firstTest.content).toContain("test('mock'");
     const output = await new MockRunnerAdapter().run({
@@ -41,7 +42,7 @@ describe("mock adapter boundaries", () => {
     };
     const codex = new MockCodexAdapter();
     const hypothesis = await codex.analyze(request);
-    const generatedTest = await codex.generateTest({ request, hypothesis });
+    const generatedTest = await codex.generateTest({ request, hypothesis: hypothesis.hypothesis });
     const runner = new MockRunnerAdapter(result);
 
     const firstRun = await runner.run({ repositoryPath: request.repositoryPath, generatedTest });
@@ -80,7 +81,7 @@ describe("mock adapter boundaries", () => {
 
     const codex = new MockCodexAdapter();
     const hypothesis = await codex.analyze(request);
-    const generatedTest = await codex.generateTest({ request, hypothesis });
+    const generatedTest = await codex.generateTest({ request, hypothesis: hypothesis.hypothesis });
     const output = await new MockRunnerAdapter(result).run({
       repositoryPath: request.repositoryPath,
       generatedTest

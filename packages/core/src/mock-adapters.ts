@@ -1,4 +1,5 @@
 import type {
+  CodexAnalysisResult,
   ExecutionResult,
   InvestigationRequest,
   ReproductionHypothesis,
@@ -21,9 +22,9 @@ const mockGeneratedTest: GeneratedTest = {
 };
 
 export class MockCodexAdapter implements CodexAdapter {
-  async analyze(request: InvestigationRequest): Promise<ReproductionHypothesis> {
+  async analyze(request: InvestigationRequest): Promise<CodexAnalysisResult> {
     void request;
-    return mockHypothesis;
+    return { hypothesis: mockHypothesis, evidence: [] };
   }
 
   async generateTest(input: GenerateTestInput): Promise<GeneratedTest> {

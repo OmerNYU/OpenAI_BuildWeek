@@ -1,21 +1,11 @@
 import {
-  reproductionHypothesisSchema,
-  type ReproductionHypothesis
+  codexAnalysisResultSchema,
+  type CodexAnalysisResult
 } from "@failspec/contracts";
 import { z } from "zod";
 
-const evidenceSchema = z.object({
-  sourcePath: z.string().trim().min(1),
-  observation: z.string().trim().min(1)
-});
-
-const analysisOutputSchema = z.object({
-  hypothesis: reproductionHypothesisSchema,
-  evidence: z.array(evidenceSchema)
-});
-
 function validateEvidence(
-  output: z.infer<typeof analysisOutputSchema>,
+  output: CodexAnalysisResult,
   context: z.RefinementCtx
 ) {
     const relevantPaths = new Set(output.hypothesis.relevantFiles.map((file) => file.path));
@@ -37,13 +27,10 @@ const generatedTestOutputSchema = z.object({
   })
 });
 
-export const codexAnalysisOutputSchema = analysisOutputSchema.superRefine(validateEvidence);
+export const codexAnalysisOutputSchema = codexAnalysisResultSchema.superRefine(validateEvidence);
 export const codexGeneratedTestOutputSchema = generatedTestOutputSchema;
 
-export interface CodexAnalysisOutput {
-  hypothesis: ReproductionHypothesis;
-  evidence: Array<z.infer<typeof evidenceSchema>>;
-}
+export type CodexAnalysisOutput = CodexAnalysisResult;
 
 export interface CodexGeneratedTestOutput {
   generatedTestContent: string;

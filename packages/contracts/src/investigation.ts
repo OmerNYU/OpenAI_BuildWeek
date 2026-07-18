@@ -61,6 +61,18 @@ export type ExecutionResult = z.infer<typeof executionResultSchema>;
 
 const boundedTextSchema = nonEmptyString.max(2_000);
 
+export const analysisEvidenceItemSchema = z.object({
+  sourcePath: nonEmptyString,
+  observation: boundedTextSchema
+});
+export type AnalysisEvidenceItem = z.infer<typeof analysisEvidenceItemSchema>;
+
+export const codexAnalysisResultSchema = z.object({
+  hypothesis: reproductionHypothesisSchema,
+  evidence: z.array(analysisEvidenceItemSchema)
+});
+export type CodexAnalysisResult = z.infer<typeof codexAnalysisResultSchema>;
+
 export const playwrightTestStatusSchema = z.enum([
   "passed",
   "failed",
