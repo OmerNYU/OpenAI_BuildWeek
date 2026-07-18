@@ -4,11 +4,11 @@ FailSpec uses Codex to inspect a trusted local React or Next.js repository and p
 
 ## Setup and boundary
 
-Authenticate the local Codex CLI before using the real adapter. The adapter invokes `codex exec` in JSONL mode with a read-only sandbox and an ephemeral session. It runs from the repository path supplied by preflight, which must be an isolated worktree.
+Authenticate the local Codex CLI before using the real adapter. The adapter invokes `codex exec` in JSONL mode with a read-only sandbox and an ephemeral session. Local mode currently runs from the trusted `InvestigationRequest.repositoryPath` supplied with the investigation request, and inspection remains read-only. Real repository preflight and isolated worktree creation are not implemented yet. Once Person 3's repository pipeline is integrated, this path must be a preflighted isolated worktree.
 
 The local executor stops a Codex process after 120 seconds or after 1 MiB of combined standard output and error output. It returns a CLI failure to the caller. The adapter does not pin a model, so model selection follows the local Codex CLI configuration.
 
-The server still uses `MockCodexAdapter` by default. `CodexInvestigationAdapter` is the real implementation for the integration path.
+The server uses `MockCodexAdapter` by default. Set `FAILSPEC_CODEX_MODE=local` to use `CodexInvestigationAdapter`; this requires an installed and authenticated Codex CLI. Local mode performs real read-only repository analysis and test generation, while runner execution and verdict classification remain mocked. No real Playwright test is executed by this integration.
 
 ## Investigation
 

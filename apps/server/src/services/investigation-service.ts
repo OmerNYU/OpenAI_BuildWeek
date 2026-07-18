@@ -31,14 +31,14 @@ export class InvestigationService {
     };
 
     await this.store.save(investigation);
-    return this.runMockWorkflow(investigation);
+    return this.runWorkflow(investigation);
   }
 
   getById(id: string): Promise<Investigation | undefined> {
     return this.store.getById(id);
   }
 
-  private async runMockWorkflow(investigation: Investigation): Promise<Investigation> {
+  private async runWorkflow(investigation: Investigation): Promise<Investigation> {
     let lastPersisted = structuredClone(investigation);
 
     const persist = async () => {
@@ -97,7 +97,7 @@ export class InvestigationService {
       throw error;
     }
 
-    const message = "Mock investigation workflow failed.";
+    const message = "Investigation workflow failed.";
     assertTransition(investigation.status, "execution_error");
     investigation.status = "execution_error";
     investigation.updatedAt = new Date().toISOString();

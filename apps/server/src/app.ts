@@ -1,10 +1,7 @@
 import express, { type ErrorRequestHandler } from "express";
-import { MockCodexAdapter, MockRunnerAdapter, type CodexAdapter, type RunnerAdapter } from "@failspec/core";
-import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import type { CodexAdapter, RunnerAdapter } from "@failspec/core";
 import { createInvestigationsRouter } from "./routes/investigations.js";
 import { InvestigationService } from "./services/investigation-service.js";
-import { JsonInvestigationStore } from "./storage/json-investigation-store.js";
 import type { InvestigationStore } from "./storage/investigation-store.js";
 
 export interface AppDependencies {
@@ -13,17 +10,7 @@ export interface AppDependencies {
   runnerAdapter: RunnerAdapter;
 }
 
-function createDefaultDependencies(): AppDependencies {
-  const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
-
-  return {
-    store: new JsonInvestigationStore(join(repositoryRoot, ".failspec", "investigations")),
-    codexAdapter: new MockCodexAdapter(),
-    runnerAdapter: new MockRunnerAdapter()
-  };
-}
-
-export function createApp(dependencies: AppDependencies = createDefaultDependencies()) {
+export function createApp(dependencies: AppDependencies) {
   const app = express();
   const investigationService = new InvestigationService(
     dependencies.store,
