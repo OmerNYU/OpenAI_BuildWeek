@@ -57,7 +57,17 @@ export class MockRunnerAdapter implements RunnerAdapter {
   private readonly result: RunnerOutput;
 
   constructor(result: RunnerOutput | ExecutionResult = defaultRunnerOutput) {
-    this.result = "execution" in result ? result : { ...defaultRunnerOutput, execution: result };
+    this.result = "execution" in result
+      ? result
+      : {
+          execution: result,
+          evidence: {
+            testStatus: "unknown",
+            consoleErrors: [],
+            pageErrors: [],
+            artifactPaths: result.artifacts
+          }
+        };
   }
 
   async run(input: RunnerInput): Promise<RunnerOutput> {

@@ -44,11 +44,10 @@ describe("mock adapter boundaries", () => {
 
     expect(firstRun.execution).toBe(result);
     expect(firstRun.evidence).toEqual({
-      testTitle: "Mock regression test",
-      testStatus: "passed",
+      testStatus: "unknown",
       consoleErrors: [],
       pageErrors: [],
-      artifactPaths: ["artifacts/mock-trace.zip"]
+      artifactPaths: ["trace.zip"]
     });
     expect(secondRun).toEqual(firstRun);
   });
