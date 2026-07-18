@@ -64,13 +64,14 @@ export class InvestigationService {
     try {
       await transition("preflight", "Mock preflight completed.");
       await transition("analyzing", "Analyzing the reported failure.");
-      const hypothesis = await this.codexAdapter.analyze(investigation.request);
-      investigation.hypothesis = hypothesis;
+      const analysis = await this.codexAdapter.analyze(investigation.request);
+      investigation.hypothesis = analysis.hypothesis;
+      investigation.analysisEvidence = analysis.evidence;
       await transition("hypothesis_ready", "Reproduction hypothesis is ready.");
       await transition("generating_test", "Generating a regression test.");
       const generatedTest = await this.codexAdapter.generateTest({
         request: investigation.request,
-        hypothesis
+        hypothesis: analysis.hypothesis
       });
       investigation.generatedTestContent = generatedTest.content;
       investigation.generatedTestPath = generatedTest.path;
@@ -97,6 +98,7 @@ export class InvestigationService {
   ): Promise<Investigation> {
     const investigation = structuredClone(lastPersisted);
     investigation.hypothesis ??= current.hypothesis;
+    investigation.analysisEvidence ??= current.analysisEvidence;
     investigation.generatedTestPath ??= current.generatedTestPath;
     investigation.generatedTestContent ??= current.generatedTestContent;
     investigation.execution ??= current.execution;

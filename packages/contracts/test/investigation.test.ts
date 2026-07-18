@@ -4,6 +4,7 @@ import {
   executionResultSchema,
   generatedTestStagingResultSchema,
   investigationRequestSchema,
+  investigationSchema,
   repositoryPreflightResultSchema,
   runnerOutputSchema,
   verificationResultSchema,
@@ -21,6 +22,29 @@ describe("investigationRequestSchema", () => {
         actualBehavior: "Actual"
       }).success
     ).toBe(false);
+  });
+});
+
+describe("investigationSchema", () => {
+  it("accepts stored records created before analysis evidence was persisted", () => {
+    expect(
+      investigationSchema.safeParse({
+        id: "investigation-1",
+        status: "created",
+        request: {
+          repositoryPath: "C:/repos/example",
+          bugTitle: "Checkout fails",
+          bugDescription: "Checkout does not complete.",
+          expectedBehavior: "Checkout completes.",
+          actualBehavior: "Checkout remains open."
+        },
+        timeline: [
+          { status: "created", at: "2026-07-19T00:00:00.000Z", message: "Investigation created." }
+        ],
+        createdAt: "2026-07-19T00:00:00.000Z",
+        updatedAt: "2026-07-19T00:00:00.000Z"
+      }).success
+    ).toBe(true);
   });
 });
 

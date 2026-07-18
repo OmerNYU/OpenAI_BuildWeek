@@ -104,6 +104,7 @@ describe("runtime dependency construction", () => {
     const completed = await request(app).get(`/api/investigations/${response.body.id}`);
     expect(completed.body.status).toBe("verified");
     expect(completed.body.hypothesis.summary).toBe("Mock hypothesis for the reported failure.");
+    expect(completed.body.analysisEvidence).toEqual([]);
     expect(executor.execute).not.toHaveBeenCalled();
   });
 
@@ -129,6 +130,12 @@ describe("runtime dependency construction", () => {
     const completed = await request(app).get(`/api/investigations/${response.body.id}`);
     expect(completed.body.status).toBe("verified");
     expect(completed.body.hypothesis).toEqual(hypothesis);
+    expect(completed.body.analysisEvidence).toEqual([
+      {
+        sourcePath: "src/checkout.tsx",
+        observation: "The submit handler does not render an error message."
+      }
+    ]);
     expect(completed.body.generatedTestContent).toBe(generatedTestContent);
     expect(executor.execute).toHaveBeenCalledTimes(2);
     const [analysisCall, generationCall] = executor.execute.mock.calls;
@@ -191,6 +198,12 @@ describe("runtime dependency construction", () => {
     const completed = await request(app).get(`/api/investigations/${response.body.id}`);
     expect(completed.body.status).toBe("execution_error");
     expect(completed.body.hypothesis).toEqual(hypothesis);
+    expect(completed.body.analysisEvidence).toEqual([
+      {
+        sourcePath: "src/checkout.tsx",
+        observation: "The submit handler does not render an error message."
+      }
+    ]);
     expect(completed.body.generatedTestContent).toBeUndefined();
   });
 });

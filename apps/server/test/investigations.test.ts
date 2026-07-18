@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   Investigation,
   InvestigationRequest,
+  CodexAnalysisResult,
   ReproductionHypothesis,
   RunnerOutput
 } from "@failspec/contracts";
@@ -81,6 +82,7 @@ describe("investigation API", () => {
     expect(completed.body.status).toBe("verified");
     expect(completed.body.timeline.map((event: { status: string }) => event.status)).toEqual(successfulLifecycle);
     expect(completed.body.hypothesis.summary).toBe("Mock hypothesis for the reported failure.");
+    expect(completed.body.analysisEvidence).toEqual([]);
     expect(completed.body.generatedTestPath).toBe("tests/failspec.mock.spec.ts");
     expect(completed.body.generatedTestContent).toContain("test('mock'");
     expect(completed.body.execution).toEqual(mockExecution());
@@ -90,10 +92,10 @@ describe("investigation API", () => {
   it("persists an intermediate analyzing state while Codex analysis is still active", async () => {
     const scheduler = new ManualWorkflowScheduler();
     const analysisStarted = deferred<void>();
-    const hypothesis = deferred<ReproductionHypothesis>();
+    const hypothesis = deferred<CodexAnalysisResult>();
     const mockCodexAdapter = new MockCodexAdapter();
     const codexAdapter: CodexAdapter = {
-      async analyze(): Promise<ReproductionHypothesis> {
+      async analyze(): Promise<CodexAnalysisResult> {
         analysisStarted.resolve(undefined);
         return hypothesis.promise;
       },
@@ -120,13 +122,14 @@ describe("investigation API", () => {
     expect(intermediate.body.timeline.at(-1).status).toBe("analyzing");
     expect(intermediate.body.hypothesis).toBeUndefined();
 
-    hypothesis.resolve(mockHypothesis());
+    hypothesis.resolve(mockAnalysis());
     await workflow;
     const completed = await request(app).get(`/api/investigations/${created.body.id}`);
 
     expect(completed.body.status).toBe("verified");
     expect(completed.body.timeline.map((event: { status: string }) => event.status)).toEqual(successfulLifecycle);
     expect(completed.body.hypothesis).toEqual(mockHypothesis());
+    expect(completed.body.analysisEvidence).toEqual(mockAnalysis().evidence);
     expect(completed.body.generatedTestPath).toBe("tests/failspec.mock.spec.ts");
     expect(completed.body.generatedTestContent).toContain("test('mock'");
     expect(completed.body.execution).toEqual(mockExecution());
@@ -193,7 +196,7 @@ describe("investigation API", () => {
   it("records execution_error without a hypothesis when analysis fails", async () => {
     const scheduler = new ManualWorkflowScheduler();
     const codexAdapter: CodexAdapter = {
-      async analyze(): Promise<ReproductionHypothesis> {
+      async analyze(): Promise<CodexAnalysisResult> {
         throw new Error("analysis failed");
       },
       async generateTest(_input: GenerateTestInput): Promise<GeneratedTest> {
@@ -216,8 +219,8 @@ describe("investigation API", () => {
   it("preserves the hypothesis when test generation fails", async () => {
     const scheduler = new ManualWorkflowScheduler();
     const codexAdapter: CodexAdapter = {
-      async analyze(): Promise<ReproductionHypothesis> {
-        return mockHypothesis();
+      async analyze(): Promise<CodexAnalysisResult> {
+        return mockAnalysis();
       },
       async generateTest(_input: GenerateTestInput): Promise<GeneratedTest> {
         void _input;
@@ -233,6 +236,7 @@ describe("investigation API", () => {
 
     expect(completed.body.status).toBe("execution_error");
     expect(completed.body.hypothesis.summary).toBe("Test hypothesis.");
+    expect(completed.body.analysisEvidence).toEqual(mockAnalysis().evidence);
     expect(completed.body.generatedTestContent).toBeUndefined();
   });
 
@@ -380,6 +384,18 @@ function mockHypothesis(): ReproductionHypothesis {
     reproductionSteps: ["Run the mock scenario."],
     expectedFailureSignal: "Mock failure signal.",
     assumptions: []
+  };
+}
+
+function mockAnalysis(): CodexAnalysisResult {
+  return {
+    hypothesis: mockHypothesis(),
+    evidence: [
+      {
+        sourcePath: "src/checkout.tsx",
+        observation: "The submit handler lacks an error state."
+      }
+    ]
   };
 }
 

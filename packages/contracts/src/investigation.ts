@@ -204,6 +204,7 @@ export const investigationResultSchema = z.object({
   id: nonEmptyString,
   status: investigationStatusSchema,
   hypothesis: reproductionHypothesisSchema.optional(),
+  analysisEvidence: z.array(analysisEvidenceItemSchema).optional(),
   generatedTestPath: z.string().optional(),
   generatedTestContent: z.string().optional(),
   execution: executionResultSchema.optional(),
