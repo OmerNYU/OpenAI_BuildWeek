@@ -111,5 +111,5 @@ Record only decisions confirmed by the team. Do not add speculative or unapprove
 - **Context:** Preserve raw Playwright facts without treating a failed process or test as proof of reproduction.
 - **Alternatives considered:** Require generated tests to use named `test.step()` labels, or infer a verdict from the process exit code.
 - **Rationale:** Playwright status, assertion details, errors, and artifacts provide evidence without constraining generated-test structure. A non-zero exit code is insufficient by itself.
-- **Consequences:** Runner implementations record facts only. Implementations must sanitize any failure message before it is public or persisted. Preflight, worktree, and staging operations use typed result unions.
+- **Consequences:** Runner implementations record facts only. Execution-evidence schemas bound structure and length but do not sanitize collected content; the real runner must sanitize it before constructing `RunnerOutput`. Preflight, worktree, and staging contracts expose stable failure codes only, and the server maps them to fixed safe messages.
 - **Owners:** Persons 1, 2, and 3

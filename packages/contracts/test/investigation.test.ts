@@ -58,21 +58,27 @@ describe("execution contracts", () => {
     expect(
       repositoryPreflightResultSchema.parse({
         status: "unsupported",
-        failure: { code: "dirty_repository", message: "Repository has uncommitted changes." }
+        failure: { code: "dirty_repository" }
       })
     ).toMatchObject({ status: "unsupported" });
     expect(
       worktreePreparationResultSchema.parse({
         status: "failed",
-        failure: { code: "creation_failed", message: "Unable to prepare worktree." }
+        failure: { code: "creation_failed" }
       })
     ).toMatchObject({ status: "failed" });
     expect(
       generatedTestStagingResultSchema.parse({
         status: "rejected",
-        failure: { code: "disallowed_import", message: "Generated test import is not allowed." }
+        failure: { code: "disallowed_import" }
       })
     ).toMatchObject({ status: "rejected" });
+    expect(
+      repositoryPreflightResultSchema.safeParse({
+        status: "unsupported",
+        failure: { code: "dirty_repository", message: "raw internal error" }
+      }).success
+    ).toBe(false);
   });
 
   it("rejects invalid execution and verification data", () => {

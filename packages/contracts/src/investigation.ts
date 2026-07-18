@@ -59,7 +59,7 @@ export const executionResultSchema = z.object({
 });
 export type ExecutionResult = z.infer<typeof executionResultSchema>;
 
-const sanitizedMessageSchema = nonEmptyString.max(2_000);
+const boundedTextSchema = nonEmptyString.max(2_000);
 
 export const playwrightTestStatusSchema = z.enum([
   "passed",
@@ -74,7 +74,7 @@ export type PlaywrightTestStatus = z.infer<typeof playwrightTestStatusSchema>;
 export const executionEvidenceSchema = z.object({
   testTitle: nonEmptyString.optional(),
   testStatus: playwrightTestStatusSchema.optional(),
-  assertionFailureMessage: sanitizedMessageSchema.optional(),
+  assertionFailureMessage: boundedTextSchema.optional(),
   expectedValue: z.string().max(2_000).optional(),
   actualValue: z.string().max(2_000).optional(),
   failureLocation: z
@@ -84,8 +84,8 @@ export const executionEvidenceSchema = z.object({
       column: z.number().int().positive().optional()
     })
     .optional(),
-  consoleErrors: z.array(sanitizedMessageSchema),
-  pageErrors: z.array(sanitizedMessageSchema),
+  consoleErrors: z.array(boundedTextSchema),
+  pageErrors: z.array(boundedTextSchema),
   artifactPaths: z.array(nonEmptyString)
 });
 export type ExecutionEvidence = z.infer<typeof executionEvidenceSchema>;
@@ -96,19 +96,19 @@ export const runnerOutputSchema = z.object({
 });
 export type RunnerOutput = z.infer<typeof runnerOutputSchema>;
 
-const preflightFailureSchema = z.object({
-  code: z.enum([
-    "unsafe_path",
-    "not_git_repository",
-    "dirty_repository",
-    "unsupported_framework",
-    "playwright_not_configured",
-    "unsupported_package_manager",
-    "unsupported_script",
-    "inspection_failed"
-  ]),
-  message: sanitizedMessageSchema
-});
+export const repositoryPreflightFailureCodeSchema = z.enum([
+  "unsafe_path",
+  "not_git_repository",
+  "dirty_repository",
+  "unsupported_framework",
+  "playwright_not_configured",
+  "unsupported_package_manager",
+  "unsupported_script",
+  "inspection_failed"
+]);
+export type RepositoryPreflightFailureCode = z.infer<typeof repositoryPreflightFailureCodeSchema>;
+
+const preflightFailureSchema = z.object({ code: repositoryPreflightFailureCodeSchema }).strict();
 
 export const repositoryPreflightResultSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("ready"), repositoryPath: nonEmptyString }),
@@ -117,10 +117,15 @@ export const repositoryPreflightResultSchema = z.discriminatedUnion("status", [
 ]);
 export type RepositoryPreflightResult = z.infer<typeof repositoryPreflightResultSchema>;
 
-const worktreeFailureSchema = z.object({
-  code: z.enum(["invalid_destination", "creation_failed", "metadata_failed", "cleanup_failed"]),
-  message: sanitizedMessageSchema
-});
+export const worktreeFailureCodeSchema = z.enum([
+  "invalid_destination",
+  "creation_failed",
+  "metadata_failed",
+  "cleanup_failed"
+]);
+export type WorktreeFailureCode = z.infer<typeof worktreeFailureCodeSchema>;
+
+const worktreeFailureSchema = z.object({ code: worktreeFailureCodeSchema }).strict();
 
 export const worktreePreparationResultSchema = z.discriminatedUnion("status", [
   z.object({
@@ -133,17 +138,19 @@ export const worktreePreparationResultSchema = z.discriminatedUnion("status", [
 ]);
 export type WorktreePreparationResult = z.infer<typeof worktreePreparationResultSchema>;
 
-const stagingFailureSchema = z.object({
-  code: z.enum([
-    "invalid_encoding",
-    "file_too_large",
-    "typescript_parse_failed",
-    "disallowed_import",
-    "disallowed_api",
-    "write_failed"
-  ]),
-  message: sanitizedMessageSchema
-});
+export const generatedTestStagingFailureCodeSchema = z.enum([
+  "invalid_encoding",
+  "file_too_large",
+  "typescript_parse_failed",
+  "disallowed_import",
+  "disallowed_api",
+  "write_failed"
+]);
+export type GeneratedTestStagingFailureCode = z.infer<
+  typeof generatedTestStagingFailureCodeSchema
+>;
+
+const stagingFailureSchema = z.object({ code: generatedTestStagingFailureCodeSchema }).strict();
 
 export const generatedTestStagingResultSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("staged"), stagedTestPath: nonEmptyString }),
@@ -162,14 +169,14 @@ export type VerificationVerdict = z.infer<typeof verificationVerdictSchema>;
 
 export const verificationSignalSchema = z.object({
   type: nonEmptyString,
-  message: sanitizedMessageSchema
+  message: boundedTextSchema
 });
 export type VerificationSignal = z.infer<typeof verificationSignalSchema>;
 
 export const verificationResultSchema = z.object({
   verdict: verificationVerdictSchema,
-  explanation: sanitizedMessageSchema,
-  recommendedNextStep: sanitizedMessageSchema,
+  explanation: boundedTextSchema,
+  recommendedNextStep: boundedTextSchema,
   supportingSignals: z.array(verificationSignalSchema)
 });
 export type VerificationResult = z.infer<typeof verificationResultSchema>;
@@ -188,6 +195,7 @@ export const investigationResultSchema = z.object({
   generatedTestPath: z.string().optional(),
   generatedTestContent: z.string().optional(),
   execution: executionResultSchema.optional(),
+  executionEvidence: executionEvidenceSchema.optional(),
   verdictExplanation: z.string().optional(),
   recommendedNextStep: z.string().optional()
 });

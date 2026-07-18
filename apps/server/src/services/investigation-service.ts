@@ -74,6 +74,7 @@ export class InvestigationService {
         generatedTest
       });
       investigation.execution = runnerOutput.execution;
+      investigation.executionEvidence = runnerOutput.evidence;
       investigation.verdictExplanation = "The deterministic mock runner returned the expected reproduction signal.";
       investigation.recommendedNextStep = "Review the generated regression test before running it against a real repository.";
       await transition("verified", "Mock reproduction verified.");
@@ -93,6 +94,7 @@ export class InvestigationService {
     investigation.generatedTestPath ??= current.generatedTestPath;
     investigation.generatedTestContent ??= current.generatedTestContent;
     investigation.execution ??= current.execution;
+    investigation.executionEvidence ??= current.executionEvidence;
 
     if (!canTransition(investigation.status, "execution_error")) {
       throw error;

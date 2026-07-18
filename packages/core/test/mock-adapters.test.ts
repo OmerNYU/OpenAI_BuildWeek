@@ -43,7 +43,13 @@ describe("mock adapter boundaries", () => {
     const secondRun = await runner.run({ repositoryPath: request.repositoryPath, generatedTest });
 
     expect(firstRun.execution).toBe(result);
-    expect(firstRun.evidence).toEqual({ consoleErrors: [], pageErrors: [], artifactPaths: [] });
+    expect(firstRun.evidence).toEqual({
+      testTitle: "Mock regression test",
+      testStatus: "passed",
+      consoleErrors: [],
+      pageErrors: [],
+      artifactPaths: ["artifacts/mock-trace.zip"]
+    });
     expect(secondRun).toEqual(firstRun);
   });
 

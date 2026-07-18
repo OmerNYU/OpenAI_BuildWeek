@@ -45,9 +45,11 @@ const defaultExecutionResult: ExecutionResult = {
 const defaultRunnerOutput: RunnerOutput = {
   execution: defaultExecutionResult,
   evidence: {
+    testTitle: "Mock regression test",
+    testStatus: "passed",
     consoleErrors: [],
     pageErrors: [],
-    artifactPaths: []
+    artifactPaths: ["artifacts/mock-trace.zip"]
   }
 };
 
