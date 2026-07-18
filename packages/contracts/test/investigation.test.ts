@@ -85,6 +85,20 @@ describe("Codex analysis contracts", () => {
       }).success
     ).toBe(false);
   });
+
+  it("rejects evidence source paths outside the relevant files", () => {
+    const result = codexAnalysisResultSchema.safeParse({
+      hypothesis,
+      evidence: [{ sourcePath: "src/unrelated.ts", observation: "This file is unrelated." }]
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toContainEqual(
+        expect.objectContaining({ message: "Evidence source path must be a relevant file" })
+      );
+    }
+  });
 });
 
 describe("execution contracts", () => {

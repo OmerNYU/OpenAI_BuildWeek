@@ -67,10 +67,24 @@ export const analysisEvidenceItemSchema = z.object({
 });
 export type AnalysisEvidenceItem = z.infer<typeof analysisEvidenceItemSchema>;
 
-export const codexAnalysisResultSchema = z.object({
-  hypothesis: reproductionHypothesisSchema,
-  evidence: z.array(analysisEvidenceItemSchema)
-});
+export const codexAnalysisResultSchema = z
+  .object({
+    hypothesis: reproductionHypothesisSchema,
+    evidence: z.array(analysisEvidenceItemSchema)
+  })
+  .superRefine((output, context) => {
+    const relevantPaths = new Set(output.hypothesis.relevantFiles.map((file) => file.path));
+
+    for (const evidence of output.evidence) {
+      if (!relevantPaths.has(evidence.sourcePath)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Evidence source path must be a relevant file",
+          path: ["evidence"]
+        });
+      }
+    }
+  });
 export type CodexAnalysisResult = z.infer<typeof codexAnalysisResultSchema>;
 
 export const playwrightTestStatusSchema = z.enum([
