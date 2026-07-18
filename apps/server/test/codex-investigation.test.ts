@@ -102,4 +102,18 @@ describe("CodexInvestigationAdapter", () => {
     await expect(adapter.analyze(request)).rejects.toThrow();
     expect(calls).toHaveLength(1);
   });
+
+  it("rejects analysis with a missing evidence field without retrying", async () => {
+    const calls: Array<{ cwd: string; prompt: string }> = [];
+    const client = new CodexJsonlClient({
+      async execute(input) {
+        calls.push(input);
+        return { exitCode: 0, stdout: jsonlMessage({ hypothesis }), stderr: "" };
+      }
+    });
+    const adapter: CodexAdapter = new CodexInvestigationAdapter(client);
+
+    await expect(adapter.analyze(request)).rejects.toThrow();
+    expect(calls).toHaveLength(1);
+  });
 });

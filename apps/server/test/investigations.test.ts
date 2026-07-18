@@ -180,13 +180,23 @@ describe("investigation API", () => {
 
   it("reloads a completed JSON record through a new store instance", async () => {
     const scheduler = new ManualWorkflowScheduler();
-    const app = createTestApp({ scheduler });
+    const mockCodexAdapter = new MockCodexAdapter();
+    const codexAdapter: CodexAdapter = {
+      async analyze(): Promise<CodexAnalysisResult> {
+        return mockAnalysis();
+      },
+      generateTest(input: GenerateTestInput): Promise<GeneratedTest> {
+        return mockCodexAdapter.generateTest(input);
+      }
+    };
+    const app = createTestApp({ scheduler, codexAdapter });
     const created = await request(app).post("/api/investigations").send(validRequest);
 
     await scheduler.runAll();
     const reloaded = await new JsonInvestigationStore(storageDirectory).getById(created.body.id);
 
     expect(reloaded?.status).toBe("verified");
+    expect(reloaded?.analysisEvidence).toEqual(mockAnalysis().evidence);
     expect(reloaded?.generatedTestContent).toContain("test('mock'");
   });
 
@@ -247,13 +257,22 @@ describe("investigation API", () => {
 
   it("preserves generated test information when the runner fails", async () => {
     const scheduler = new ManualWorkflowScheduler();
+    const mockCodexAdapter = new MockCodexAdapter();
+    const codexAdapter: CodexAdapter = {
+      async analyze(): Promise<CodexAnalysisResult> {
+        return mockAnalysis();
+      },
+      generateTest(input: GenerateTestInput): Promise<GeneratedTest> {
+        return mockCodexAdapter.generateTest(input);
+      }
+    };
     const runnerAdapter: RunnerAdapter = {
       async run(_input: RunnerInput): Promise<RunnerOutput> {
         void _input;
         throw new Error("runner failed");
       }
     };
-    const app = createTestApp({ scheduler, runnerAdapter });
+    const app = createTestApp({ scheduler, codexAdapter, runnerAdapter });
 
     const created = await request(app).post("/api/investigations").send(validRequest);
     expect(created.body.status).toBe("created");
@@ -262,6 +281,7 @@ describe("investigation API", () => {
 
     expect(completed.body.status).toBe("execution_error");
     expect(completed.body.hypothesis).toBeDefined();
+    expect(completed.body.analysisEvidence).toEqual(mockAnalysis().evidence);
     expect(completed.body.generatedTestPath).toBe("tests/failspec.mock.spec.ts");
     expect(completed.body.generatedTestContent).toContain("test('mock'");
     expect(completed.body.execution).toBeUndefined();

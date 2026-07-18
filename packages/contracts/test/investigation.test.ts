@@ -86,6 +86,14 @@ describe("Codex analysis contracts", () => {
     ).toBe(false);
   });
 
+  it("rejects analysis with a missing evidence field", () => {
+    expect(codexAnalysisResultSchema.safeParse({ hypothesis }).success).toBe(false);
+  });
+
+  it("accepts an empty evidence array", () => {
+    expect(codexAnalysisResultSchema.safeParse({ hypothesis, evidence: [] }).success).toBe(true);
+  });
+
   it("rejects evidence source paths outside the relevant files", () => {
     const result = codexAnalysisResultSchema.safeParse({
       hypothesis,
