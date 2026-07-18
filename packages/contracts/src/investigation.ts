@@ -59,6 +59,121 @@ export const executionResultSchema = z.object({
 });
 export type ExecutionResult = z.infer<typeof executionResultSchema>;
 
+const sanitizedMessageSchema = nonEmptyString.max(2_000);
+
+export const playwrightTestStatusSchema = z.enum([
+  "passed",
+  "failed",
+  "skipped",
+  "timedOut",
+  "interrupted",
+  "unknown"
+]);
+export type PlaywrightTestStatus = z.infer<typeof playwrightTestStatusSchema>;
+
+export const executionEvidenceSchema = z.object({
+  testTitle: nonEmptyString.optional(),
+  testStatus: playwrightTestStatusSchema.optional(),
+  assertionFailureMessage: sanitizedMessageSchema.optional(),
+  expectedValue: z.string().max(2_000).optional(),
+  actualValue: z.string().max(2_000).optional(),
+  failureLocation: z
+    .object({
+      file: nonEmptyString,
+      line: z.number().int().positive().optional(),
+      column: z.number().int().positive().optional()
+    })
+    .optional(),
+  consoleErrors: z.array(sanitizedMessageSchema),
+  pageErrors: z.array(sanitizedMessageSchema),
+  artifactPaths: z.array(nonEmptyString)
+});
+export type ExecutionEvidence = z.infer<typeof executionEvidenceSchema>;
+
+export const runnerOutputSchema = z.object({
+  execution: executionResultSchema,
+  evidence: executionEvidenceSchema
+});
+export type RunnerOutput = z.infer<typeof runnerOutputSchema>;
+
+const preflightFailureSchema = z.object({
+  code: z.enum([
+    "unsafe_path",
+    "not_git_repository",
+    "dirty_repository",
+    "unsupported_framework",
+    "playwright_not_configured",
+    "unsupported_package_manager",
+    "unsupported_script",
+    "inspection_failed"
+  ]),
+  message: sanitizedMessageSchema
+});
+
+export const repositoryPreflightResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("ready"), repositoryPath: nonEmptyString }),
+  z.object({ status: z.literal("unsupported"), failure: preflightFailureSchema }),
+  z.object({ status: z.literal("failed"), failure: preflightFailureSchema })
+]);
+export type RepositoryPreflightResult = z.infer<typeof repositoryPreflightResultSchema>;
+
+const worktreeFailureSchema = z.object({
+  code: z.enum(["invalid_destination", "creation_failed", "metadata_failed", "cleanup_failed"]),
+  message: sanitizedMessageSchema
+});
+
+export const worktreePreparationResultSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("prepared"),
+    investigationId: nonEmptyString,
+    sourceRepositoryPath: nonEmptyString,
+    worktreePath: nonEmptyString
+  }),
+  z.object({ status: z.literal("failed"), failure: worktreeFailureSchema })
+]);
+export type WorktreePreparationResult = z.infer<typeof worktreePreparationResultSchema>;
+
+const stagingFailureSchema = z.object({
+  code: z.enum([
+    "invalid_encoding",
+    "file_too_large",
+    "typescript_parse_failed",
+    "disallowed_import",
+    "disallowed_api",
+    "write_failed"
+  ]),
+  message: sanitizedMessageSchema
+});
+
+export const generatedTestStagingResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("staged"), stagedTestPath: nonEmptyString }),
+  z.object({ status: z.literal("rejected"), failure: stagingFailureSchema }),
+  z.object({ status: z.literal("failed"), failure: stagingFailureSchema })
+]);
+export type GeneratedTestStagingResult = z.infer<typeof generatedTestStagingResultSchema>;
+
+export const verificationVerdictSchema = z.enum([
+  "verified",
+  "partial",
+  "not_reproduced",
+  "execution_error"
+]);
+export type VerificationVerdict = z.infer<typeof verificationVerdictSchema>;
+
+export const verificationSignalSchema = z.object({
+  type: nonEmptyString,
+  message: sanitizedMessageSchema
+});
+export type VerificationSignal = z.infer<typeof verificationSignalSchema>;
+
+export const verificationResultSchema = z.object({
+  verdict: verificationVerdictSchema,
+  explanation: sanitizedMessageSchema,
+  recommendedNextStep: sanitizedMessageSchema,
+  supportingSignals: z.array(verificationSignalSchema)
+});
+export type VerificationResult = z.infer<typeof verificationResultSchema>;
+
 export const investigationTimelineEventSchema = z.object({
   status: investigationStatusSchema,
   at: z.string().datetime(),

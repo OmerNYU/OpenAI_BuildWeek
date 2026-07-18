@@ -69,10 +69,11 @@ export class InvestigationService {
       investigation.generatedTestPath = generatedTest.path;
       await transition("test_ready", "Generated test is ready.");
       await transition("executing", "Running the generated test.");
-      investigation.execution = await this.runnerAdapter.run({
+      const runnerOutput = await this.runnerAdapter.run({
         repositoryPath: investigation.request.repositoryPath,
         generatedTest
       });
+      investigation.execution = runnerOutput.execution;
       investigation.verdictExplanation = "The deterministic mock runner returned the expected reproduction signal.";
       investigation.recommendedNextStep = "Review the generated regression test before running it against a real repository.";
       await transition("verified", "Mock reproduction verified.");

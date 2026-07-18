@@ -103,3 +103,13 @@ Record only decisions confirmed by the team. Do not add speculative or unapprove
 - **Rationale:** Keep the first integration path deterministic and straightforward to test.
 - **Consequences:** The create endpoint may complete the mock workflow before returning.
 - **Owners:** Person 1
+
+### Execution and verification boundary
+
+- **Date:** 2026-07-18
+- **Decision:** `RunnerAdapter` returns `RunnerOutput`, which contains backward-compatible `ExecutionResult` command facts and separate `ExecutionEvidence`. Verification alone assigns final outcomes through `VerificationResult`.
+- **Context:** Preserve raw Playwright facts without treating a failed process or test as proof of reproduction.
+- **Alternatives considered:** Require generated tests to use named `test.step()` labels, or infer a verdict from the process exit code.
+- **Rationale:** Playwright status, assertion details, errors, and artifacts provide evidence without constraining generated-test structure. A non-zero exit code is insufficient by itself.
+- **Consequences:** Runner implementations record facts only. Implementations must sanitize any failure message before it is public or persisted. Preflight, worktree, and staging operations use typed result unions.
+- **Owners:** Persons 1, 2, and 3
