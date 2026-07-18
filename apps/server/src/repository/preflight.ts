@@ -205,7 +205,7 @@ export async function planDependencyInstall(worktreePath: string): Promise<Depen
   if (stateIsTracked === undefined) {
     return unavailable("unsafe_worktree_state");
   }
-  if (!stateIsTracked && recordedHash === lockfileHash(lockfile)) {
+  if (!stateIsTracked && recordedHash === lockfileHash(lockfile) && await hasInstalledDependencies(state.worktreePath)) {
     return { kind: "reuse", logPath: state.logPath };
   }
 
@@ -217,6 +217,9 @@ export async function initializeDependencyInstallLog(
 ): Promise<DependencyInstallLogResult> {
   const state = await validatedWorktreeState(worktreePath);
   if (!state) {
+    return unavailable("unsafe_worktree_state");
+  }
+  if (await isTrackedByRepository(state.worktreePath, installLogFile) !== false) {
     return unavailable("unsafe_worktree_state");
   }
 
@@ -307,6 +310,11 @@ async function validatedWorktreeState(worktreePath: string): Promise<ValidatedWo
 async function isSafeStateFile(path: string): Promise<boolean> {
   const entry = await lstatOrUndefined(path);
   return !entry || (!entry.isSymbolicLink() && entry.isFile());
+}
+
+async function hasInstalledDependencies(worktreePath: string): Promise<boolean> {
+  const entry = await lstatOrUndefined(join(worktreePath, "node_modules"));
+  return Boolean(entry?.isDirectory() && !entry.isSymbolicLink());
 }
 
 async function lstatOrUndefined(path: string) {

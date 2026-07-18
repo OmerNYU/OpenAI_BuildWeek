@@ -218,6 +218,12 @@ describe("repository preflight", () => {
     await expect(recordDependencyInstall(worktreePath)).resolves.toEqual({ kind: "recorded" });
     await expect(planDependencyInstall(worktreePath)).resolves.toMatchObject({ kind: "reuse" });
 
+    await rm(join(worktreePath, "node_modules"), { recursive: true });
+    await expect(planDependencyInstall(worktreePath)).resolves.toMatchObject({
+      kind: "install",
+      command: { command: "npm", args: ["ci"] }
+    });
+
     await writeFile(join(worktreePath, "package-lock.json"), "changed", "utf8");
     await expect(planDependencyInstall(worktreePath)).resolves.toMatchObject({ kind: "install" });
   });
@@ -254,6 +260,24 @@ describe("repository preflight", () => {
       kind: "unavailable",
       reason: "unsafe_worktree_state"
     });
+  });
+
+  it("does not append to an install log committed by the repository", async () => {
+    const worktreePath = await createRepository();
+    const logPath = join(worktreePath, ".failspec", "npm-install.log");
+    await mkdir(join(worktreePath, ".failspec"));
+    await writeFile(logPath, "repository log\n", "utf8");
+    await commit(worktreePath, "commit fake install log");
+
+    await expect(initializeDependencyInstallLog(worktreePath)).resolves.toEqual({
+      kind: "unavailable",
+      reason: "unsafe_worktree_state"
+    });
+    await expect(appendDependencyInstallLog(worktreePath, "runner output\n")).resolves.toEqual({
+      kind: "unavailable",
+      reason: "unsafe_worktree_state"
+    });
+    await expect(readFile(logPath, "utf8")).resolves.toBe("repository log\n");
   });
 
   it("rejects a repository-controlled .failspec symlink without writing to its target", async () => {
