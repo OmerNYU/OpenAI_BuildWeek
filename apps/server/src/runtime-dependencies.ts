@@ -5,6 +5,7 @@ import type { AppDependencies } from "./app.js";
 import { CodexInvestigationAdapter } from "./codex/adapter.js";
 import { CodexJsonlClient, type CodexCliExecutor } from "./codex/client.js";
 import { createLocalCodexCliExecutor } from "./codex/executor.js";
+import { InProcessWorkflowScheduler } from "./scheduling/workflow-scheduler.js";
 import { JsonInvestigationStore } from "./storage/json-investigation-store.js";
 
 export type CodexMode = "mock" | "local";
@@ -26,7 +27,8 @@ export function createRuntimeDependencies(
       options.investigationDirectory ?? defaultInvestigationDirectory()
     ),
     codexAdapter,
-    runnerAdapter: new MockRunnerAdapter()
+    runnerAdapter: new MockRunnerAdapter(),
+    scheduler: new InProcessWorkflowScheduler()
   };
 }
 

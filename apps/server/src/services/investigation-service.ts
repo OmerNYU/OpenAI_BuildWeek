@@ -11,12 +11,14 @@ import {
   type RunnerAdapter
 } from "@failspec/core";
 import type { InvestigationStore } from "../storage/investigation-store.js";
+import type { WorkflowScheduler } from "../scheduling/workflow-scheduler.js";
 
 export class InvestigationService {
   constructor(
     private readonly store: InvestigationStore,
     private readonly codexAdapter: CodexAdapter,
-    private readonly runnerAdapter: RunnerAdapter
+    private readonly runnerAdapter: RunnerAdapter,
+    private readonly scheduler: WorkflowScheduler
   ) {}
 
   async create(request: InvestigationRequest): Promise<Investigation> {
@@ -31,7 +33,12 @@ export class InvestigationService {
     };
 
     await this.store.save(investigation);
-    return this.runWorkflow(investigation);
+    const initialSnapshot = structuredClone(investigation);
+    const workflowInvestigation = structuredClone(investigation);
+    this.scheduler.schedule(async () => {
+      await this.runWorkflow(workflowInvestigation);
+    });
+    return initialSnapshot;
   }
 
   getById(id: string): Promise<Investigation | undefined> {

@@ -2,12 +2,14 @@ import express, { type ErrorRequestHandler } from "express";
 import type { CodexAdapter, RunnerAdapter } from "@failspec/core";
 import { createInvestigationsRouter } from "./routes/investigations.js";
 import { InvestigationService } from "./services/investigation-service.js";
+import type { WorkflowScheduler } from "./scheduling/workflow-scheduler.js";
 import type { InvestigationStore } from "./storage/investigation-store.js";
 
 export interface AppDependencies {
   store: InvestigationStore;
   codexAdapter: CodexAdapter;
   runnerAdapter: RunnerAdapter;
+  scheduler: WorkflowScheduler;
 }
 
 export function createApp(dependencies: AppDependencies) {
@@ -15,7 +17,8 @@ export function createApp(dependencies: AppDependencies) {
   const investigationService = new InvestigationService(
     dependencies.store,
     dependencies.codexAdapter,
-    dependencies.runnerAdapter
+    dependencies.runnerAdapter,
+    dependencies.scheduler
   );
 
   app.use(express.json());

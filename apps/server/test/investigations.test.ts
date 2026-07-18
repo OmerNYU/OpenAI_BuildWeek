@@ -2,8 +2,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Investigation, InvestigationRequest, ReproductionHypothesis, RunnerOutput } from "@failspec/contracts";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  Investigation,
+  InvestigationRequest,
+  ReproductionHypothesis,
+  RunnerOutput
+} from "@failspec/contracts";
 import {
   MockCodexAdapter,
   MockRunnerAdapter,
@@ -14,6 +19,7 @@ import {
   type RunnerInput
 } from "@failspec/core";
 import { createApp } from "../src/app.js";
+import type { WorkflowScheduler } from "../src/scheduling/workflow-scheduler.js";
 import { JsonInvestigationStore } from "../src/storage/json-investigation-store.js";
 import type { InvestigationStore } from "../src/storage/investigation-store.js";
 
@@ -26,6 +32,17 @@ const validRequest: InvestigationRequest = {
   terminalLog: "Mock console output"
 };
 
+const successfulLifecycle = [
+  "created",
+  "preflight",
+  "analyzing",
+  "hypothesis_ready",
+  "generating_test",
+  "test_ready",
+  "executing",
+  "verified"
+];
+
 let storageDirectory: string;
 
 beforeEach(async () => {
@@ -36,48 +53,99 @@ afterEach(async () => {
   await rm(storageDirectory, { recursive: true, force: true });
 });
 
-function createTestApp(overrides: Partial<{
-  store: InvestigationStore;
-  codexAdapter: CodexAdapter;
-  runnerAdapter: RunnerAdapter;
-}> = {}) {
-  return createApp({
-    store: overrides.store ?? new JsonInvestigationStore(storageDirectory),
-    codexAdapter: overrides.codexAdapter ?? new MockCodexAdapter(),
-    runnerAdapter: overrides.runnerAdapter ?? new MockRunnerAdapter()
-  });
-}
-
 describe("investigation API", () => {
-  it("creates, persists, and returns a verified deterministic investigation", async () => {
-    const response = await request(createTestApp())
-      .post("/api/investigations")
-      .send(validRequest);
+  it("returns a created snapshot before the scheduled workflow persists a verified result", async () => {
+    const scheduler = new ManualWorkflowScheduler();
+    const codexAdapter = new MockCodexAdapter();
+    const runnerAdapter = new MockRunnerAdapter();
+    const analyze = vi.spyOn(codexAdapter, "analyze");
+    const run = vi.spyOn(runnerAdapter, "run");
+    const app = createTestApp({ scheduler, codexAdapter, runnerAdapter });
 
-    expect(response.status).toBe(201);
-    expect(response.body.status).toBe("verified");
-    expect(response.body.hypothesis.summary).toBe("Mock hypothesis for the reported failure.");
-    expect(response.body.generatedTestPath).toBe("tests/failspec.mock.spec.ts");
-    expect(response.body.generatedTestContent).toContain("test('mock'");
-    expect(response.body.execution).toEqual({
-      command: "npx playwright test tests/failspec.mock.spec.ts",
-      exitCode: 0,
-      timedOut: false,
-      stdout: "Mock runner completed.",
-      stderr: "",
-      durationMs: 1,
-      artifacts: []
-    });
-    expect(response.body.timeline.map((event: { status: string }) => event.status)).toEqual([
-      "created",
-      "preflight",
-      "analyzing",
-      "hypothesis_ready",
-      "generating_test",
-      "test_ready",
-      "executing",
-      "verified"
-    ]);
+    const created = await request(app).post("/api/investigations").send(validRequest);
+
+    expect(created.status).toBe(201);
+    expect(created.body.status).toBe("created");
+    expect(created.body.timeline.map((event: { status: string }) => event.status)).toEqual(["created"]);
+    expect(analyze).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    expect(scheduler.pendingTaskCount).toBe(1);
+
+    const beforeWorkflow = await request(app).get(`/api/investigations/${created.body.id}`);
+    expect(beforeWorkflow.body).toEqual(created.body);
+
+    await scheduler.runNext();
+    const completed = await request(app).get(`/api/investigations/${created.body.id}`);
+
+    expect(completed.status).toBe(200);
+    expect(completed.body.status).toBe("verified");
+    expect(completed.body.timeline.map((event: { status: string }) => event.status)).toEqual(successfulLifecycle);
+    expect(completed.body.hypothesis.summary).toBe("Mock hypothesis for the reported failure.");
+    expect(completed.body.generatedTestPath).toBe("tests/failspec.mock.spec.ts");
+    expect(completed.body.generatedTestContent).toContain("test('mock'");
+    expect(completed.body.execution).toEqual(mockExecution());
+    expect(completed.body.verdictExplanation).toContain("deterministic mock runner");
+  });
+
+  it("persists an intermediate analyzing state while Codex analysis is still active", async () => {
+    const scheduler = new ManualWorkflowScheduler();
+    const analysisStarted = deferred<void>();
+    const hypothesis = deferred<ReproductionHypothesis>();
+    const mockCodexAdapter = new MockCodexAdapter();
+    const codexAdapter: CodexAdapter = {
+      async analyze(): Promise<ReproductionHypothesis> {
+        analysisStarted.resolve(undefined);
+        return hypothesis.promise;
+      },
+      generateTest(input: GenerateTestInput): Promise<GeneratedTest> {
+        return mockCodexAdapter.generateTest(input);
+      }
+    };
+    const app = createTestApp({ scheduler, codexAdapter });
+
+    const created = await request(app).post("/api/investigations").send(validRequest);
+
+    expect(created.status).toBe(201);
+    expect(created.body.status).toBe("created");
+    expect(scheduler.pendingTaskCount).toBe(1);
+    const task = scheduler.takeNext();
+    if (!task) {
+      throw new Error("Expected a scheduled workflow task.");
+    }
+    const workflow = task();
+    await analysisStarted.promise;
+
+    const intermediate = await request(app).get(`/api/investigations/${created.body.id}`);
+    expect(intermediate.body.status).toBe("analyzing");
+    expect(intermediate.body.timeline.at(-1).status).toBe("analyzing");
+    expect(intermediate.body.hypothesis).toBeUndefined();
+
+    hypothesis.resolve(mockHypothesis());
+    await workflow;
+    const completed = await request(app).get(`/api/investigations/${created.body.id}`);
+
+    expect(completed.body.status).toBe("verified");
+    expect(completed.body.timeline.map((event: { status: string }) => event.status)).toEqual(successfulLifecycle);
+    expect(completed.body.hypothesis).toEqual(mockHypothesis());
+    expect(completed.body.generatedTestPath).toBe("tests/failspec.mock.spec.ts");
+    expect(completed.body.generatedTestContent).toContain("test('mock'");
+    expect(completed.body.execution).toEqual(mockExecution());
+    expect(completed.body.verdictExplanation).toContain("deterministic mock runner");
+  });
+
+  it("keeps the creation response created when an immediate scheduler invokes the workflow", async () => {
+    const scheduler = new ImmediateWorkflowScheduler();
+    const app = createTestApp({ scheduler });
+
+    const created = await request(app).post("/api/investigations").send(validRequest);
+
+    expect(created.status).toBe(201);
+    expect(created.body.status).toBe("created");
+    expect(created.body.timeline.map((event: { status: string }) => event.status)).toEqual(["created"]);
+
+    await scheduler.waitForTask();
+    const completed = await request(app).get(`/api/investigations/${created.body.id}`);
+    expect(completed.body.status).toBe("verified");
   });
 
   it("returns safe validation details for invalid required input", async () => {
@@ -87,19 +155,31 @@ describe("investigation API", () => {
 
     expect(response.status).toBe(400);
     expect(response.body.error).toBe("Invalid investigation request.");
-    expect(response.body.details).toEqual([
-      expect.objectContaining({ field: "bugTitle" })
-    ]);
+    expect(response.body.details).toEqual([expect.objectContaining({ field: "bugTitle" })]);
     expect(JSON.stringify(response.body)).not.toContain("ZodError");
   });
 
-  it("retrieves a created investigation from JSON storage", async () => {
-    const app = createTestApp();
+  it("retrieves the persisted created investigation before its workflow runs", async () => {
+    const scheduler = new ManualWorkflowScheduler();
+    const app = createTestApp({ scheduler });
     const created = await request(app).post("/api/investigations").send(validRequest);
     const retrieved = await request(app).get(`/api/investigations/${created.body.id}`);
 
     expect(retrieved.status).toBe(200);
     expect(retrieved.body).toEqual(created.body);
+    expect(retrieved.body.status).toBe("created");
+  });
+
+  it("reloads a completed JSON record through a new store instance", async () => {
+    const scheduler = new ManualWorkflowScheduler();
+    const app = createTestApp({ scheduler });
+    const created = await request(app).post("/api/investigations").send(validRequest);
+
+    await scheduler.runAll();
+    const reloaded = await new JsonInvestigationStore(storageDirectory).getById(created.body.id);
+
+    expect(reloaded?.status).toBe("verified");
+    expect(reloaded?.generatedTestContent).toContain("test('mock'");
   });
 
   it("returns not found for an unknown investigation", async () => {
@@ -110,19 +190,10 @@ describe("investigation API", () => {
     expect(response.body).toEqual({ error: "Investigation not found." });
   });
 
-  it("reloads a JSON record through a new store instance", async () => {
-    const app = createTestApp();
-    const created = await request(app).post("/api/investigations").send(validRequest);
-    const reloaded = await new JsonInvestigationStore(storageDirectory).getById(created.body.id);
-
-    expect(reloaded?.status).toBe("verified");
-    expect(reloaded?.generatedTestContent).toBe(created.body.generatedTestContent);
-  });
-
-  it("records execution_error when Codex analysis fails", async () => {
+  it("records execution_error without a hypothesis when analysis fails", async () => {
+    const scheduler = new ManualWorkflowScheduler();
     const codexAdapter: CodexAdapter = {
-      async analyze(_request: InvestigationRequest): Promise<ReproductionHypothesis> {
-        void _request;
+      async analyze(): Promise<ReproductionHypothesis> {
         throw new Error("analysis failed");
       },
       async generateTest(_input: GenerateTestInput): Promise<GeneratedTest> {
@@ -130,21 +201,22 @@ describe("investigation API", () => {
         throw new Error("not reached");
       }
     };
+    const app = createTestApp({ scheduler, codexAdapter });
 
-    const response = await request(createTestApp({ codexAdapter }))
-      .post("/api/investigations")
-      .send(validRequest);
+    const created = await request(app).post("/api/investigations").send(validRequest);
+    expect(created.body.status).toBe("created");
+    await scheduler.runNext();
+    const completed = await request(app).get(`/api/investigations/${created.body.id}`);
 
-    expect(response.status).toBe(201);
-    expect(response.body.status).toBe("execution_error");
-    expect(response.body.timeline.at(-1).status).toBe("execution_error");
-    expect(response.body.hypothesis).toBeUndefined();
+    expect(completed.body.status).toBe("execution_error");
+    expect(completed.body.timeline.at(-1).status).toBe("execution_error");
+    expect(completed.body.hypothesis).toBeUndefined();
   });
 
   it("preserves the hypothesis when test generation fails", async () => {
+    const scheduler = new ManualWorkflowScheduler();
     const codexAdapter: CodexAdapter = {
-      async analyze(_request: InvestigationRequest): Promise<ReproductionHypothesis> {
-        void _request;
+      async analyze(): Promise<ReproductionHypothesis> {
         return mockHypothesis();
       },
       async generateTest(_input: GenerateTestInput): Promise<GeneratedTest> {
@@ -152,44 +224,86 @@ describe("investigation API", () => {
         throw new Error("generation failed");
       }
     };
+    const app = createTestApp({ scheduler, codexAdapter });
 
-    const response = await request(createTestApp({ codexAdapter }))
-      .post("/api/investigations")
-      .send(validRequest);
+    const created = await request(app).post("/api/investigations").send(validRequest);
+    expect(created.body.status).toBe("created");
+    await scheduler.runNext();
+    const completed = await request(app).get(`/api/investigations/${created.body.id}`);
 
-    expect(response.status).toBe(201);
-    expect(response.body.status).toBe("execution_error");
-    expect(response.body.hypothesis.summary).toBe("Test hypothesis.");
-    expect(response.body.generatedTestContent).toBeUndefined();
+    expect(completed.body.status).toBe("execution_error");
+    expect(completed.body.hypothesis.summary).toBe("Test hypothesis.");
+    expect(completed.body.generatedTestContent).toBeUndefined();
   });
 
-  it("preserves generated evidence when the runner fails", async () => {
+  it("preserves generated test information when the runner fails", async () => {
+    const scheduler = new ManualWorkflowScheduler();
     const runnerAdapter: RunnerAdapter = {
       async run(_input: RunnerInput): Promise<RunnerOutput> {
         void _input;
         throw new Error("runner failed");
       }
     };
+    const app = createTestApp({ scheduler, runnerAdapter });
 
-    const response = await request(createTestApp({ runnerAdapter }))
+    const created = await request(app).post("/api/investigations").send(validRequest);
+    expect(created.body.status).toBe("created");
+    await scheduler.runNext();
+    const completed = await request(app).get(`/api/investigations/${created.body.id}`);
+
+    expect(completed.body.status).toBe("execution_error");
+    expect(completed.body.hypothesis).toBeDefined();
+    expect(completed.body.generatedTestPath).toBe("tests/failspec.mock.spec.ts");
+    expect(completed.body.generatedTestContent).toContain("test('mock'");
+    expect(completed.body.execution).toBeUndefined();
+  });
+
+  it("does not schedule when the initial persistence fails", async () => {
+    const scheduler = new ManualWorkflowScheduler();
+    const failingStore: InvestigationStore = {
+      async save(): Promise<void> {
+        throw new Error("first save failed");
+      },
+      async getById(): Promise<Investigation | undefined> {
+        return undefined;
+      }
+    };
+
+    const response = await request(createTestApp({ store: failingStore, scheduler }))
       .post("/api/investigations")
       .send(validRequest);
 
-    expect(response.status).toBe(201);
-    expect(response.body.status).toBe("execution_error");
-    expect(response.body.hypothesis).toBeDefined();
-    expect(response.body.generatedTestPath).toBe("tests/failspec.mock.spec.ts");
-    expect(response.body.generatedTestContent).toContain("test('mock'");
-    expect(response.body.execution).toBeUndefined();
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual({ error: "Internal server error" });
+    expect(scheduler.pendingTaskCount).toBe(0);
+  });
+
+  it("runs independently scheduled investigations without updating the other record", async () => {
+    const scheduler = new ManualWorkflowScheduler();
+    const app = createTestApp({ scheduler });
+    const first = await request(app).post("/api/investigations").send(validRequest);
+    const second = await request(app)
+      .post("/api/investigations")
+      .send({ ...validRequest, bugTitle: "Checkout does not validate" });
+
+    expect(first.body.id).not.toBe(second.body.id);
+    expect(scheduler.pendingTaskCount).toBe(2);
+
+    await scheduler.runNext();
+    const firstCompleted = await request(app).get(`/api/investigations/${first.body.id}`);
+    const secondPending = await request(app).get(`/api/investigations/${second.body.id}`);
+    expect(firstCompleted.body.status).toBe("verified");
+    expect(secondPending.body.status).toBe("created");
+
+    await scheduler.runNext();
+    const secondCompleted = await request(app).get(`/api/investigations/${second.body.id}`);
+    expect(secondCompleted.body.status).toBe("verified");
   });
 
   it("returns controlled server errors for unexpected store failures", async () => {
     const failingStore: InvestigationStore = {
-      async save(_investigation: Investigation): Promise<void> {
-        void _investigation;
-      },
-      async getById(_id: string): Promise<Investigation | undefined> {
-        void _id;
+      async save(): Promise<void> {},
+      async getById(): Promise<Investigation | undefined> {
         throw new Error("storage unavailable");
       }
     };
@@ -200,27 +314,63 @@ describe("investigation API", () => {
     expect(response.status).toBe(500);
     expect(response.body).toEqual({ error: "Internal server error" });
   });
-
-  it("returns a controlled error when the first save fails", async () => {
-    const failingStore: InvestigationStore = {
-      async save(_investigation: Investigation): Promise<void> {
-        void _investigation;
-        throw new Error("first save failed");
-      },
-      async getById(_id: string): Promise<Investigation | undefined> {
-        void _id;
-        return undefined;
-      }
-    };
-
-    const response = await request(createTestApp({ store: failingStore }))
-      .post("/api/investigations")
-      .send(validRequest);
-
-    expect(response.status).toBe(500);
-    expect(response.body).toEqual({ error: "Internal server error" });
-  });
 });
+
+function createTestApp(overrides: Partial<{
+  store: InvestigationStore;
+  codexAdapter: CodexAdapter;
+  runnerAdapter: RunnerAdapter;
+  scheduler: WorkflowScheduler;
+}> = {}) {
+  return createApp({
+    store: overrides.store ?? new JsonInvestigationStore(storageDirectory),
+    codexAdapter: overrides.codexAdapter ?? new MockCodexAdapter(),
+    runnerAdapter: overrides.runnerAdapter ?? new MockRunnerAdapter(),
+    scheduler: overrides.scheduler ?? new ManualWorkflowScheduler()
+  });
+}
+
+class ManualWorkflowScheduler implements WorkflowScheduler {
+  private readonly tasks: Array<() => Promise<void>> = [];
+
+  get pendingTaskCount(): number {
+    return this.tasks.length;
+  }
+
+  schedule(task: () => Promise<void>): void {
+    this.tasks.push(task);
+  }
+
+  async runNext(): Promise<void> {
+    const task = this.takeNext();
+    if (!task) {
+      throw new Error("No scheduled workflow task is pending.");
+    }
+    await task();
+  }
+
+  takeNext(): (() => Promise<void>) | undefined {
+    return this.tasks.shift();
+  }
+
+  async runAll(): Promise<void> {
+    while (this.tasks.length) {
+      await this.runNext();
+    }
+  }
+}
+
+class ImmediateWorkflowScheduler implements WorkflowScheduler {
+  private taskPromise: Promise<void> | undefined;
+
+  schedule(task: () => Promise<void>): void {
+    this.taskPromise = task();
+  }
+
+  async waitForTask(): Promise<void> {
+    await this.taskPromise;
+  }
+}
 
 function mockHypothesis(): ReproductionHypothesis {
   return {
@@ -231,4 +381,32 @@ function mockHypothesis(): ReproductionHypothesis {
     expectedFailureSignal: "Mock failure signal.",
     assumptions: []
   };
+}
+
+function mockExecution() {
+  return {
+    command: "npx playwright test tests/failspec.mock.spec.ts",
+    exitCode: 0,
+    timedOut: false,
+    stdout: "Mock runner completed.",
+    stderr: "",
+    durationMs: 1,
+    artifacts: []
+  };
+}
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve: (value: T) => void = () => {};
+  let reject: (error: unknown) => void = () => {};
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
 }

@@ -8,6 +8,10 @@ import { createApp } from "../src/app.js";
 import { CodexInvestigationAdapter } from "../src/codex/adapter.js";
 import type { CodexCliExecutor } from "../src/codex/client.js";
 import { createRuntimeDependencies } from "../src/runtime-dependencies.js";
+import {
+  InProcessWorkflowScheduler,
+  type WorkflowScheduler
+} from "../src/scheduling/workflow-scheduler.js";
 
 const requestBody = {
   repositoryPath: "C:/repos/checkout-app",
@@ -46,6 +50,7 @@ describe("runtime dependency construction", () => {
     const dependencies = createRuntimeDependencies({ investigationDirectory: storageDirectory });
 
     expect(dependencies.codexAdapter).toBeInstanceOf(MockCodexAdapter);
+    expect(dependencies.scheduler).toBeInstanceOf(InProcessWorkflowScheduler);
   });
 
   it("selects the deterministic mock adapter for explicit mock mode", () => {
@@ -78,38 +83,53 @@ describe("runtime dependency construction", () => {
 
   it("preserves mock-mode API behavior without invoking a Codex executor", async () => {
     const executor = createFakeExecutor([], "mock mode must not call the executor");
-    const app = createApp(
-      createRuntimeDependencies({
+    const scheduler = new ManualWorkflowScheduler();
+    const app = createRuntimeApp(
+      {
         env: { FAILSPEC_CODEX_MODE: "mock" },
         codexCliExecutor: executor,
         investigationDirectory: storageDirectory
-      })
+      },
+      scheduler
     );
 
     const response = await request(app).post("/api/investigations").send(requestBody);
 
     expect(response.status).toBe(201);
-    expect(response.body.status).toBe("verified");
-    expect(response.body.hypothesis.summary).toBe("Mock hypothesis for the reported failure.");
+    expect(response.body.status).toBe("created");
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(scheduler.pendingTaskCount).toBe(1);
+
+    await scheduler.runAll();
+    const completed = await request(app).get(`/api/investigations/${response.body.id}`);
+    expect(completed.body.status).toBe("verified");
+    expect(completed.body.hypothesis.summary).toBe("Mock hypothesis for the reported failure.");
     expect(executor.execute).not.toHaveBeenCalled();
   });
 
   it("persists local-mode Codex analysis and generated test output from JSONL", async () => {
     const executor = createFakeExecutor([analysisJsonl(), generatedTestJsonl()]);
-    const app = createApp(
-      createRuntimeDependencies({
+    const scheduler = new ManualWorkflowScheduler();
+    const app = createRuntimeApp(
+      {
         env: { FAILSPEC_CODEX_MODE: "local" },
         codexCliExecutor: executor,
         investigationDirectory: storageDirectory
-      })
+      },
+      scheduler
     );
 
     const response = await request(app).post("/api/investigations").send(requestBody);
 
     expect(response.status).toBe(201);
-    expect(response.body.status).toBe("verified");
-    expect(response.body.hypothesis).toEqual(hypothesis);
-    expect(response.body.generatedTestContent).toBe(generatedTestContent);
+    expect(response.body.status).toBe("created");
+    expect(executor.execute).not.toHaveBeenCalled();
+
+    await scheduler.runAll();
+    const completed = await request(app).get(`/api/investigations/${response.body.id}`);
+    expect(completed.body.status).toBe("verified");
+    expect(completed.body.hypothesis).toEqual(hypothesis);
+    expect(completed.body.generatedTestContent).toBe(generatedTestContent);
     expect(executor.execute).toHaveBeenCalledTimes(2);
     const [analysisCall, generationCall] = executor.execute.mock.calls;
     expect(analysisCall?.[0]).toMatchObject({ cwd: requestBody.repositoryPath });
@@ -117,8 +137,8 @@ describe("runtime dependency construction", () => {
     expect(analysisCall?.[0].prompt).toContain(requestBody.bugTitle);
     expect(generationCall?.[0].prompt).toContain(requestBody.bugTitle);
     expect(generationCall?.[0].prompt).not.toBe(analysisCall?.[0].prompt);
-    expect(response.body.verdictExplanation).toContain("deterministic mock runner");
-    expect(response.body.timeline.at(-1)).toMatchObject({
+    expect(completed.body.verdictExplanation).toContain("deterministic mock runner");
+    expect(completed.body.timeline.at(-1)).toMatchObject({
       status: "verified",
       message: "Mock reproduction verified."
     });
@@ -131,39 +151,74 @@ describe("runtime dependency construction", () => {
 
   it("converts local analysis failure to a sanitized execution error", async () => {
     const executor = createFakeExecutor([], "analysis failure at C:/secret/repository");
-    const app = createApp(
-      createRuntimeDependencies({
+    const scheduler = new ManualWorkflowScheduler();
+    const app = createRuntimeApp(
+      {
         env: { FAILSPEC_CODEX_MODE: "local" },
         codexCliExecutor: executor,
         investigationDirectory: storageDirectory
-      })
+      },
+      scheduler
     );
 
     const response = await request(app).post("/api/investigations").send(requestBody);
 
     expect(response.status).toBe(201);
-    expect(response.body.status).toBe("execution_error");
-    expect(JSON.stringify(response.body)).not.toContain("C:/secret/repository");
+    expect(response.body.status).toBe("created");
+    await scheduler.runAll();
+    const completed = await request(app).get(`/api/investigations/${response.body.id}`);
+    expect(completed.body.status).toBe("execution_error");
+    expect(JSON.stringify(completed.body)).not.toContain("C:/secret/repository");
   });
 
   it("preserves the local hypothesis when test generation fails", async () => {
     const executor = createFakeExecutor([analysisJsonl()], "generated test failure");
-    const app = createApp(
-      createRuntimeDependencies({
+    const scheduler = new ManualWorkflowScheduler();
+    const app = createRuntimeApp(
+      {
         env: { FAILSPEC_CODEX_MODE: "local" },
         codexCliExecutor: executor,
         investigationDirectory: storageDirectory
-      })
+      },
+      scheduler
     );
 
     const response = await request(app).post("/api/investigations").send(requestBody);
 
     expect(response.status).toBe(201);
-    expect(response.body.status).toBe("execution_error");
-    expect(response.body.hypothesis).toEqual(hypothesis);
-    expect(response.body.generatedTestContent).toBeUndefined();
+    expect(response.body.status).toBe("created");
+    await scheduler.runAll();
+    const completed = await request(app).get(`/api/investigations/${response.body.id}`);
+    expect(completed.body.status).toBe("execution_error");
+    expect(completed.body.hypothesis).toEqual(hypothesis);
+    expect(completed.body.generatedTestContent).toBeUndefined();
   });
 });
+
+function createRuntimeApp(
+  options: Parameters<typeof createRuntimeDependencies>[0],
+  scheduler: WorkflowScheduler
+) {
+  return createApp({ ...createRuntimeDependencies(options), scheduler });
+}
+
+class ManualWorkflowScheduler implements WorkflowScheduler {
+  private readonly tasks: Array<() => Promise<void>> = [];
+
+  get pendingTaskCount(): number {
+    return this.tasks.length;
+  }
+
+  schedule(task: () => Promise<void>): void {
+    this.tasks.push(task);
+  }
+
+  async runAll(): Promise<void> {
+    while (this.tasks.length) {
+      await this.tasks.shift()?.();
+    }
+  }
+}
 
 function createFakeExecutor(
   responses: string[],

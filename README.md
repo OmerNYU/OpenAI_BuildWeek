@@ -51,7 +51,7 @@ Local mode performs real read-only repository analysis and test generation throu
 
 ## Investigation API
 
-The backend currently provides synchronous deterministic mock orchestration for the first vertical slice:
+The backend schedules deterministic mock orchestration in-process for the first vertical slice:
 
 - `POST /api/investigations`
 - `GET /api/investigations/:id`
@@ -69,7 +69,7 @@ Create an investigation with:
 }
 ```
 
-The mock response reaches `verified` and includes an ordered timeline, deterministic hypothesis, generated test, execution result, verdict explanation, and recommended next step. Runtime records are stored as one JSON file per investigation under `.failspec/investigations/`.
+`POST /api/investigations` returns the persisted initial `created` investigation. Clients retrieve progress through `GET /api/investigations/:id` until a terminal result includes the ordered timeline, deterministic hypothesis, generated test, execution result, verdict explanation, and recommended next step. Runtime records are stored as one JSON file per investigation under `.failspec/investigations/`. Scheduled work is not durable across server restarts; the MVP has no production job queue or recovery mechanism.
 
 ## Verification
 
@@ -82,4 +82,4 @@ npm run build
 
 ## Current scaffold limitations
 
-The frontend supports bug-report submission, investigation progress, polling through the existing API, and terminal summaries. The current mock backend may complete an investigation synchronously. The real Codex adapter is integrated behind `FAILSPEC_CODEX_MODE=local` and performs real Codex analysis and test generation. Repository preflight, isolated worktrees, generated-test staging, real Playwright execution, evidence propagation, and evidence-based verdict classification remain incomplete; runner execution and the final verdict remain mocked.
+The frontend supports bug-report submission, investigation progress, polling through the existing API, and terminal summaries. The real Codex adapter is integrated behind `FAILSPEC_CODEX_MODE=local` and performs real Codex analysis and test generation. Integration of repository preflight, isolated worktrees, generated-test staging, real Playwright execution, evidence propagation, and evidence-based verdict classification remains incomplete; runner execution and the final verdict remain mocked.

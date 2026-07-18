@@ -94,14 +94,14 @@ Record only decisions confirmed by the team. Do not add speculative or unapprove
 - **Consequences:** Local filesystem storage remains behind a typed store boundary.
 - **Owners:** Person 1
 
-### Mock investigation orchestration
+### In-process investigation orchestration
 
-- **Date:** 2026-07-17
-- **Decision:** Run synchronous deterministic mock orchestration for the initial backend vertical slice.
-- **Context:** Return a polling-ready terminal record without queues or simulated background work.
-- **Alternatives considered:** Background jobs, timers, and asynchronous scheduling.
-- **Rationale:** Keep the first integration path deterministic and straightforward to test.
-- **Consequences:** The create endpoint may complete the mock workflow before returning.
+- **Date:** 2026-07-19
+- **Decision:** Schedule deterministic mock investigation workflows in-process after persisting the initial `created` record.
+- **Context:** Allow the frontend to observe an investigation progressing through polling without adding a production queue.
+- **Alternatives considered:** Synchronous workflow execution, a durable job queue, and external background infrastructure.
+- **Rationale:** An injected in-process scheduler preserves a small local MVP while making progress observable and tests deterministic.
+- **Consequences:** `POST` returns the persisted initial state and clients poll `GET` for progress. Scheduled work is not durable across server restarts, and no recovery mechanism exists.
 - **Owners:** Person 1
 
 ### Execution and verification boundary
