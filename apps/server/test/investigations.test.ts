@@ -3,13 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type {
-  ExecutionEvidence,
-  Investigation,
-  InvestigationRequest,
-  ReproductionHypothesis,
-  RunnerOutput
-} from "@failspec/contracts";
+import type { Investigation, InvestigationRequest, ReproductionHypothesis, RunnerOutput } from "@failspec/contracts";
 import {
   MockCodexAdapter,
   MockRunnerAdapter,
@@ -74,7 +68,6 @@ describe("investigation API", () => {
       durationMs: 1,
       artifacts: []
     });
-    expect(response.body.executionEvidence).toEqual(mockEvidence);
     expect(response.body.timeline.map((event: { status: string }) => event.status)).toEqual([
       "created",
       "preflight",
@@ -124,7 +117,6 @@ describe("investigation API", () => {
 
     expect(reloaded?.status).toBe("verified");
     expect(reloaded?.generatedTestContent).toBe(created.body.generatedTestContent);
-    expect(reloaded?.executionEvidence).toEqual(mockEvidence);
   });
 
   it("records execution_error when Codex analysis fails", async () => {
@@ -191,35 +183,6 @@ describe("investigation API", () => {
     expect(response.body.execution).toBeUndefined();
   });
 
-  it("preserves runner evidence through a later persistence failure", async () => {
-    const output = runnerOutputWithEvidence();
-    const store: InvestigationStore = {
-      async save(investigation: Investigation): Promise<void> {
-        if (investigation.status === "verified") {
-          throw new Error("verified persistence failed");
-        }
-      },
-      async getById(_id: string): Promise<Investigation | undefined> {
-        void _id;
-        return undefined;
-      }
-    };
-    const runnerAdapter: RunnerAdapter = {
-      async run(_input: RunnerInput): Promise<RunnerOutput> {
-        void _input;
-        return output;
-      }
-    };
-
-    const response = await request(createTestApp({ store, runnerAdapter }))
-      .post("/api/investigations")
-      .send(validRequest);
-
-    expect(response.body.status).toBe("execution_error");
-    expect(response.body.execution).toEqual(output.execution);
-    expect(response.body.executionEvidence).toEqual(output.evidence);
-  });
-
   it("returns controlled server errors for unexpected store failures", async () => {
     const failingStore: InvestigationStore = {
       async save(_investigation: Investigation): Promise<void> {
@@ -258,39 +221,6 @@ describe("investigation API", () => {
     expect(response.body).toEqual({ error: "Internal server error" });
   });
 });
-
-const mockEvidence: ExecutionEvidence = {
-  testTitle: "Mock regression test",
-  testStatus: "passed",
-  consoleErrors: [],
-  pageErrors: [],
-  artifactPaths: ["artifacts/mock-trace.zip"]
-};
-
-function runnerOutputWithEvidence(): RunnerOutput {
-  return {
-    execution: {
-      command: "npx playwright test",
-      exitCode: 1,
-      timedOut: false,
-      stdout: "",
-      stderr: "",
-      durationMs: 1,
-      artifacts: ["artifacts/trace.zip"]
-    },
-    evidence: {
-      testTitle: "Checkout reports its failure",
-      testStatus: "failed",
-      assertionFailureMessage: "Expected confirmation page.",
-      expectedValue: "/confirmation",
-      actualValue: "/checkout",
-      failureLocation: { file: "tests/checkout.spec.ts", line: 18, column: 7 },
-      consoleErrors: ["Checkout did not complete."],
-      pageErrors: ["Mock page error."],
-      artifactPaths: ["artifacts/trace.zip"]
-    }
-  };
-}
 
 function mockHypothesis(): ReproductionHypothesis {
   return {

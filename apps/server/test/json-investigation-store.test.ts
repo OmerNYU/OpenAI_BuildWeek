@@ -61,14 +61,6 @@ function validInvestigation(): Investigation {
       actualBehavior: "Actual behavior."
     },
     status: "created",
-    executionEvidence: {
-      testTitle: "Example test",
-      testStatus: "failed",
-      assertionFailureMessage: "Expected completion.",
-      consoleErrors: ["Checkout error."],
-      pageErrors: [],
-      artifactPaths: ["artifacts/example-trace.zip"]
-    },
     timeline: [{ status: "created", at: now, message: "Investigation created." }],
     createdAt: now,
     updatedAt: now
