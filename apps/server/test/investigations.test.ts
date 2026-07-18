@@ -10,6 +10,7 @@ import type {
   ReproductionHypothesis,
   RunnerOutput
 } from "@failspec/contracts";
+import { codexAnalysisResultSchema } from "@failspec/contracts";
 import {
   MockCodexAdapter,
   MockRunnerAdapter,
@@ -55,6 +56,10 @@ afterEach(async () => {
 });
 
 describe("investigation API", () => {
+  it("keeps the mock analysis valid under the shared contract", () => {
+    expect(() => codexAnalysisResultSchema.parse(mockAnalysis())).not.toThrow();
+  });
+
   it("returns a created snapshot before the scheduled workflow persists a verified result", async () => {
     const scheduler = new ManualWorkflowScheduler();
     const codexAdapter = new MockCodexAdapter();
@@ -380,7 +385,12 @@ function mockHypothesis(): ReproductionHypothesis {
   return {
     summary: "Test hypothesis.",
     confidence: "medium",
-    relevantFiles: [],
+    relevantFiles: [
+      {
+        path: "src/checkout.tsx",
+        reason: "Contains the checkout submit handler under investigation."
+      }
+    ],
     reproductionSteps: ["Run the mock scenario."],
     expectedFailureSignal: "Mock failure signal.",
     assumptions: []
