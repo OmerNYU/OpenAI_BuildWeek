@@ -31,7 +31,25 @@ npm run dev:web
 npm run dev:server
 ```
 
-## Mocked investigation API
+### Codex mode
+
+Mock mode is the default and does not require a Codex installation:
+
+```powershell
+$env:FAILSPEC_CODEX_MODE = "mock"
+npm run dev:server
+```
+
+Local mode requires an installed and authenticated Codex CLI:
+
+```powershell
+$env:FAILSPEC_CODEX_MODE = "local"
+npm run dev:server
+```
+
+Local mode performs real read-only repository analysis and test generation through Codex. Runner execution and verdict classification remain mocked; no real Playwright test is executed.
+
+## Investigation API
 
 The backend currently provides synchronous deterministic mock orchestration for the first vertical slice:
 
@@ -64,4 +82,4 @@ npm run build
 
 ## Current scaffold limitations
 
-The frontend does not yet implement submission, polling, or results. The server uses deterministic mock adapters by default; the real Codex adapter is available for integration. Playwright execution, worktrees, and verdict classification are not implemented.
+The frontend does not yet implement submission, polling, or results. The real Codex adapter is integrated behind `FAILSPEC_CODEX_MODE=local` and performs real Codex analysis and test generation. Repository preflight, isolated worktrees, generated-test staging, and real Playwright execution are not implemented. Runner execution and the final verdict remain mocked; evidence propagation and real verdict classification are not implemented.
