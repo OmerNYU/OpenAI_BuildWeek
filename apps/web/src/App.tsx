@@ -1,22 +1,122 @@
-export function App() {
+import { useEffect, useRef, useState } from "react";
+import type { Investigation, InvestigationRequest } from "@failspec/contracts";
+import { createInvestigation, getInvestigation, InvestigationApiError } from "./api/investigations";
+import { BugReportForm } from "./components/BugReportForm";
+import { InvestigationProgress, isTerminal } from "./components/InvestigationProgress";
+import { InvestigationResults } from "./components/InvestigationResults";
+
+const defaultPollIntervalMs = 1_000;
+
+export function App({ pollIntervalMs = defaultPollIntervalMs }: { pollIntervalMs?: number }) {
+  const [investigation, setInvestigation] = useState<Investigation>();
+  const [creationError, setCreationError] = useState<string>();
+  const [pollingError, setPollingError] = useState<string>();
+  const [creating, setCreating] = useState(false);
+  const [formKey, setFormKey] = useState(0);
+  const timerRef = useRef<number>();
+  const pollAbortRef = useRef<AbortController>();
+  const investigationId = investigation?.id;
+  const investigationStatus = investigation?.status;
+
+  const pollingActive = Boolean(investigation && !isTerminal(investigation.status) && !pollingError);
+
+  useEffect(() => {
+    if (!investigationId || !investigationStatus || isTerminal(investigationStatus) || pollingError) {
+      return;
+    }
+
+    let cancelled = false;
+    const schedulePoll = () => {
+      timerRef.current = window.setTimeout(async () => {
+        const controller = new AbortController();
+        pollAbortRef.current = controller;
+        try {
+          const next = await getInvestigation(investigationId, controller.signal);
+          if (!cancelled) {
+            setInvestigation(next);
+            if (!isTerminal(next.status)) {
+              schedulePoll();
+            }
+          }
+        } catch (error) {
+          if (!cancelled && !(error instanceof DOMException && error.name === "AbortError")) {
+            setPollingError(safeErrorMessage(error, "Unable to refresh investigation progress. Start another investigation to retry."));
+          }
+        } finally {
+          if (!cancelled) {
+            pollAbortRef.current = undefined;
+          }
+        }
+      }, pollIntervalMs);
+    };
+
+    schedulePoll();
+    return () => {
+      cancelled = true;
+      if (timerRef.current !== undefined) {
+        window.clearTimeout(timerRef.current);
+        timerRef.current = undefined;
+      }
+      pollAbortRef.current?.abort();
+      pollAbortRef.current = undefined;
+    };
+  }, [investigationId, investigationStatus, pollIntervalMs, pollingError]);
+
+  async function submit(request: InvestigationRequest) {
+    setCreationError(undefined);
+    setPollingError(undefined);
+    setCreating(true);
+    try {
+      const created = await createInvestigation(request);
+      setInvestigation(created);
+    } catch (error) {
+      setCreationError(safeErrorMessage(error, "Unable to start the investigation. Try again."));
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  function reset() {
+    pollAbortRef.current?.abort();
+    if (timerRef.current !== undefined) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = undefined;
+    }
+    setInvestigation(undefined);
+    setCreationError(undefined);
+    setPollingError(undefined);
+    setCreating(false);
+    setFormKey((value) => value + 1);
+  }
+
   return (
-    <main>
+    <main className="app-shell">
       <header>
         <h1>FailSpec</h1>
         <p>From vague failures to verified tests.</p>
       </header>
       <section aria-labelledby="bug-intake-heading">
         <h2 id="bug-intake-heading">Bug intake</h2>
-        <p>Bug-report intake will be available in a later slice.</p>
+        <BugReportForm
+          key={formKey}
+          disabled={creating || pollingActive}
+          submissionError={creationError}
+          onSubmit={submit}
+        />
       </section>
       <section aria-labelledby="investigation-progress-heading">
         <h2 id="investigation-progress-heading">Investigation progress</h2>
-        <p>Progress updates will appear here.</p>
+        <InvestigationProgress investigation={investigation} pollingError={pollingError} />
       </section>
       <section aria-labelledby="results-heading">
         <h2 id="results-heading">Results</h2>
-        <p>Investigation results will appear here.</p>
+        <InvestigationResults investigation={investigation} />
       </section>
+      {investigation ? <button type="button" onClick={reset}>Start another investigation</button> : null}
     </main>
   );
+}
+
+function safeErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof InvestigationApiError ? error.message : fallback;
 }

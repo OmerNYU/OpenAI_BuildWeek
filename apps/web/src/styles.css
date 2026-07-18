@@ -1,0 +1,56 @@
+:root {
+  color: #1f2933;
+  background: #f7f8fa;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body { margin: 0; }
+
+button, input, textarea { font: inherit; }
+
+button { cursor: pointer; }
+
+button:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 3px solid #276749;
+  outline-offset: 2px;
+}
+
+.app-shell { max-width: 880px; margin: 0 auto; padding: 2rem 1rem 3rem; }
+
+header { margin-bottom: 1.5rem; }
+
+section { background: #fff; border: 1px solid #d9e1e8; border-radius: 0.5rem; margin-top: 1rem; padding: 1.25rem; }
+
+.form-grid { display: grid; gap: 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 1rem; }
+
+.form-field { display: grid; gap: 0.35rem; }
+
+.form-field:has(textarea) { grid-column: 1 / -1; }
+
+input, textarea { border: 1px solid #8fa1b3; border-radius: 0.25rem; padding: 0.55rem; width: 100%; }
+
+textarea { resize: vertical; }
+
+button { background: #205b3d; border: 0; border-radius: 0.25rem; color: #fff; margin-top: 1rem; padding: 0.6rem 0.9rem; }
+
+button:disabled { cursor: not-allowed; opacity: 0.6; }
+
+.field-error, .form-error { color: #9b1c1c; margin: 0; }
+
+.form-error { border-left: 4px solid currentColor; margin-bottom: 1rem; padding-left: 0.65rem; }
+
+.timeline { display: grid; gap: 0.85rem; padding-left: 1.4rem; }
+
+.timeline li { display: grid; gap: 0.2rem; }
+
+.timeline time { color: #52606d; font-size: 0.9rem; }
+
+.result { border-left: 4px solid #276749; padding-left: 0.75rem; }
+
+.result-error { border-color: #9b1c1c; }
+
+@media (max-width: 640px) {
+  .form-grid { grid-template-columns: 1fr; }
+}

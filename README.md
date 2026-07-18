@@ -82,4 +82,4 @@ npm run build
 
 ## Current scaffold limitations
 
-The frontend does not yet implement submission, polling, or results. The real Codex adapter is integrated behind `FAILSPEC_CODEX_MODE=local` and performs real Codex analysis and test generation. Repository preflight, isolated worktrees, generated-test staging, and real Playwright execution are not implemented. Runner execution and the final verdict remain mocked; evidence propagation and real verdict classification are not implemented.
+The frontend supports bug-report submission, investigation progress, polling through the existing API, and terminal summaries. The current mock backend may complete an investigation synchronously. The real Codex adapter is integrated behind `FAILSPEC_CODEX_MODE=local` and performs real Codex analysis and test generation. Repository preflight, isolated worktrees, generated-test staging, real Playwright execution, evidence propagation, and evidence-based verdict classification remain incomplete; runner execution and the final verdict remain mocked.
