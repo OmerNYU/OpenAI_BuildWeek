@@ -24,3 +24,8 @@ npm run test:generated
 ```
 
 Reference tests live in `tests/reference/`. Generated tests belong in `tests/generated/` and must not replace the reference test. Both directories are discovered by the Playwright configuration.
+
+## Runner compatibility
+
+FailSpec's controlled runner sets `FAILSPEC_BASE_URL` and `FAILSPEC_MANAGED_SERVER=1`.
+When those variables are present, the configuration uses the supplied loopback URL and leaves application startup to the runner.

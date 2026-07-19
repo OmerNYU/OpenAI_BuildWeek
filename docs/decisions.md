@@ -34,6 +34,16 @@ Record only decisions confirmed by the team. Do not add speculative or unapprove
 - **Consequences:** Create React App, Remix, Gatsby, Parcel, custom Webpack or Node startup servers, and other React toolchains are out of scope for the MVP. Next requires `next`, `react`, `react-dom`, and `"dev": "next dev"`; Vite React requires `vite`, `react`, `react-dom`, and `"dev": "vite"`. Both require npm, `package-lock.json`, existing Playwright configuration, and the approved generated-test script. Command strings, wrappers, shell chaining, and arbitrary script contents are rejected.
 - **Owners:** Persons 1, 2, and 3
 
+### Runner-compatible Playwright configuration
+
+- **Date:** 2026-07-19
+- **Decision:** Supported MVP Playwright configurations must use `FAILSPEC_BASE_URL` and disable their own `webServer` when `FAILSPEC_MANAGED_SERVER=1`.
+- **Context:** The controlled runner owns dynamic loopback port allocation, startup, readiness, and process cleanup.
+- **Alternatives considered:** Fixed fixture ports, repository-owned Playwright web servers, and runner-generated configuration files.
+- **Rationale:** A small explicit configuration convention preserves repository tests while allowing deterministic runner ownership during generated-test execution.
+- **Consequences:** Preflight rejects configurations without both markers. Without runner variables, the fixture retains its standalone Playwright behavior.
+- **Owners:** Persons 1, 2, and 3
+
 ### Verification outcomes
 
 - **Date:** 2026-07-17
