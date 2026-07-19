@@ -102,6 +102,16 @@ describe("repository preflight", () => {
       status: "unsupported",
       failure: { code: "playwright_not_configured" }
     });
+    for (const playwrightConfigContent of [
+      "const baseURL = process.env.FAILSPEC_BASE_URL; export default { baseURL };",
+      "const managed = process.env.FAILSPEC_MANAGED_SERVER; export default { managed };"
+    ]) {
+      const repository = await createRepository({ playwrightConfigContent });
+      await expect(preflightRepository(repository)).resolves.toMatchObject({
+        status: "unsupported",
+        failure: { code: "playwright_not_configured" }
+      });
+    }
 
     for (const scripts of [
       { dev: true, "test:generated": approvedGeneratedTestScript },
