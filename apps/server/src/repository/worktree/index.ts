@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, rename, rm, rmdir, stat, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rename, rmdir, stat, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import type { WorktreeFailureCode, WorktreePreparationResult } from "@failspec/contracts";
@@ -36,10 +36,10 @@ export interface WorktreeOptions {
   testHooks?: {
     platform?: NodeJS.Platform;
     environment?: NodeJS.ProcessEnv;
+    afterDestinationMkdir?: () => void | Promise<void>;
     beforeInitialMetadataWrite?: () => void | Promise<void>;
     beforeGitWorktreeAdd?: () => void | Promise<void>;
     beforeMetadataUpdate?: () => void | Promise<void>;
-    beforePartialCleanup?: () => void | Promise<void>;
   };
 }
 
@@ -109,7 +109,11 @@ export async function prepareIsolatedWorktreeAttempt(
     return attemptFailure("creation_failed");
   }
 
-  const destinationIdentity = await reserveWorktreeDestination(rootPath, worktreePath);
+  const destinationIdentity = await reserveWorktreeDestination(
+    rootPath,
+    worktreePath,
+    options.testHooks?.afterDestinationMkdir
+  );
   if (!destinationIdentity) {
     return attemptFailure("invalid_destination");
   }
@@ -133,7 +137,7 @@ export async function prepareIsolatedWorktreeAttempt(
   }
 
   await options.testHooks?.beforeGitWorktreeAdd?.();
-  if (!(await isOwnedDestination(rootPath, worktreePath, destinationIdentity))) {
+  if (!(await hasExpectedDestinationIdentity(rootPath, worktreePath, destinationIdentity))) {
     return attemptFailure("creation_failed", true);
   }
 
@@ -194,7 +198,7 @@ export async function cleanupIsolatedWorktree(
   if (!destinationExists) {
     return (await removeMetadata(metadataPath)) ? { status: "cleaned" } : cleanupFailure();
   }
-  if (!(await isOwnedDestination(rootPath, worktreePath, metadata))) {
+  if (!(await hasExpectedDestinationIdentity(rootPath, worktreePath, metadata))) {
     return cleanupFailure();
   }
 
@@ -209,19 +213,6 @@ export async function cleanupIsolatedWorktree(
       return cleanupFailure();
     }
     if (await exists(worktreePath)) {
-      return cleanupFailure();
-    }
-  } else if (!metadata.creationComplete) {
-    await options.testHooks?.beforePartialCleanup?.();
-    const currentMetadata = await readMetadata(metadataPath);
-    if (
-      currentMetadata.kind !== "valid" ||
-      !matchesMetadata(currentMetadata.metadata, metadata) ||
-      !(await isOwnedDestination(rootPath, worktreePath, metadata))
-    ) {
-      return cleanupFailure();
-    }
-    if (!(await removeOwnedDestination(rootPath, worktreePath, metadata))) {
       return cleanupFailure();
     }
   } else {
@@ -383,11 +374,12 @@ async function exists(path: string): Promise<boolean> {
 }
 
 interface DestinationIdentity {
+  /** An observed identity guard; it does not prove filesystem ownership. */
   destinationDevice: number;
   destinationInode: number;
 }
 
-async function isOwnedDestination(
+async function hasExpectedDestinationIdentity(
   rootPath: string,
   worktreePath: string,
   identity?: DestinationIdentity
@@ -416,13 +408,15 @@ async function isCanonicalDestination(
 
 async function reserveWorktreeDestination(
   rootPath: string,
-  worktreePath: string
+  worktreePath: string,
+  afterMkdir?: () => void | Promise<void>
 ): Promise<DestinationIdentity | undefined> {
   try {
     await mkdir(worktreePath);
   } catch {
     return undefined;
   }
+  await afterMkdir?.();
   const entry = await lstat(worktreePath).catch(() => undefined);
   return entry && await isCanonicalDestination(rootPath, worktreePath, entry)
     ? { destinationDevice: entry.dev, destinationInode: entry.ino }
@@ -434,7 +428,7 @@ async function removeEmptyReservedDestination(
   worktreePath: string,
   identity: DestinationIdentity
 ): Promise<boolean> {
-  if (!(await isOwnedDestination(rootPath, worktreePath, identity))) {
+  if (!(await hasExpectedDestinationIdentity(rootPath, worktreePath, identity))) {
     return false;
   }
   try {
@@ -443,18 +437,6 @@ async function removeEmptyReservedDestination(
   } catch {
     return false;
   }
-}
-
-async function removeOwnedDestination(
-  rootPath: string,
-  worktreePath: string,
-  metadata: OwnershipMetadata
-): Promise<boolean> {
-  if (!(await isOwnedDestination(rootPath, worktreePath, metadata))) {
-    return false;
-  }
-  await rm(worktreePath, { recursive: true, force: false }).catch(() => undefined);
-  return !(await exists(worktreePath));
 }
 
 async function writeMetadata(
@@ -574,15 +556,6 @@ async function removeMetadata(path: string): Promise<boolean> {
 
 function preparationFailure(code: WorktreeFailureCode): WorktreePreparationResult {
   return { status: "failed", failure: { code } };
-}
-
-function matchesMetadata(current: OwnershipMetadata, expected: OwnershipMetadata): boolean {
-  return current.investigationId === expected.investigationId &&
-    current.sourceRepositoryPath === expected.sourceRepositoryPath &&
-    current.worktreePath === expected.worktreePath &&
-    current.creationComplete === expected.creationComplete &&
-    current.destinationDevice === expected.destinationDevice &&
-    current.destinationInode === expected.destinationInode;
 }
 
 type WorktreePreparationAttempt =

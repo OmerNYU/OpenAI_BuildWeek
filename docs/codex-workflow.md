@@ -4,7 +4,7 @@ FailSpec uses Codex to inspect a trusted local React or Next.js repository and p
 
 ## Setup and boundary
 
-Authenticate the local Codex CLI before using the real adapter. The adapter invokes `codex exec` in JSONL mode with a read-only sandbox and an ephemeral session. Default mock mode uses deterministic pass-through repository preparation and performs no Git operations. Local mode runs repository preflight against the submitted source path, creates a detached FailSpec-owned worktree, and keeps the submitted path in the persisted investigation record. Codex inspection remains read-only.
+Authenticate the local Codex CLI before using the real adapter. The adapter invokes `codex exec` in JSONL mode with a read-only sandbox and an ephemeral session. Default mock mode uses deterministic pass-through repository preparation and performs no Git operations. Local mode runs repository preflight against the submitted source path, creates a detached FailSpec-owned worktree, and keeps the submitted path in the persisted investigation record. Codex inspection remains read-only. Cleanup removes metadata-only partial failures and Git-recognized worktrees through Git; an existing destination that Git does not recognize is preserved with its metadata for later recovery.
 
 The local executor stops a Codex process after 120 seconds or after 1 MiB of combined standard output and error output. It returns a CLI failure to the caller. The adapter does not pin a model, so model selection follows the local Codex CLI configuration.
 
@@ -53,6 +53,6 @@ The generated content must be valid TypeScript, import Playwright's `test`, decl
 
 ## Handoff and verdict
 
-The orchestrator moves the investigation from `hypothesis_ready` to `generating_test` and then `test_ready`. The runner boundary receives the isolated worktree path, but the currently injected runner is deterministic and mocked. Generated-test staging and real Playwright execution are not implemented. Execution evidence and evidence-based verdict classification remain deferred. Analysis evidence remains separate and cannot establish reproduction; a test failure or non-zero command alone is not proof of reproduction.
+The orchestrator moves the investigation from `hypothesis_ready` to `generating_test` and then `test_ready`. The runner boundary receives the isolated worktree path, but the currently injected runner is deterministic and mocked. Generated-test staging and real Playwright execution are not implemented. Execution evidence and evidence-based verdict classification remain deferred. A cleanup failure prevents successful verification. Analysis evidence remains separate and cannot establish reproduction; a test failure or non-zero command alone is not proof of reproduction.
 
 The supported verdicts are verified reproduction, partial reproduction, not reproduced, and execution error.

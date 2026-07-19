@@ -117,9 +117,9 @@ describe("LocalRepositoryWorkspace", () => {
     expect(operations.cleanupIsolatedWorktree).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps authorized rollback failures private", async () => {
+  it("keeps an unrecognized failed Git-add rollback private", async () => {
     const operations = createOperations({
-      attempt: failedAttempt("metadata_failed", true),
+      attempt: failedAttempt("creation_failed", true),
       cleanup: { status: "failed", failure: { code: "cleanup_failed" } }
     });
     const workspace = new LocalRepositoryWorkspace(operations);
@@ -127,7 +127,7 @@ describe("LocalRepositoryWorkspace", () => {
     const result = await workspace.prepare("C:/source", "investigation-31");
 
     expect(result).toEqual(preparationFailure());
-    expect(JSON.stringify(result)).not.toContain("metadata_failed");
+    expect(JSON.stringify(result)).not.toContain("creation_failed");
     expect(JSON.stringify(result)).not.toContain("cleanup_failed");
     expect(operations.cleanupIsolatedWorktree).toHaveBeenCalledTimes(1);
   });
