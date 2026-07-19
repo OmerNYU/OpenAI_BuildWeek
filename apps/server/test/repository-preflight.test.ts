@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -23,6 +24,9 @@ import {
 
 const run = promisify(execFile);
 const directories: string[] = [];
+const fixturePlaywrightConfigPath = fileURLToPath(
+  new URL("../../../fixtures/buggy-checkout-app/playwright.config.ts", import.meta.url)
+);
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -49,6 +53,14 @@ describe("repository preflight", () => {
       command: "npm",
       args: ["run", "dev", "--", "--host", "127.0.0.1", "--port", "3102"]
     });
+  });
+
+  it("accepts the committed fixture root Playwright configuration", async () => {
+    const repository = await createRepository({
+      playwrightConfigContent: await readFile(fixturePlaywrightConfigPath, "utf8")
+    });
+
+    await expect(preflightRepository(repository)).resolves.toMatchObject({ status: "ready" });
   });
 
   it("rejects unsafe, non-Git, dirty, unsupported-package-manager, and unsupported-framework repositories", async () => {
@@ -91,12 +103,27 @@ describe("repository preflight", () => {
     });
   });
 
-  it("rejects missing Playwright and non-string or blank approved scripts", async () => {
+  it("rejects missing or runner-incompatible Playwright and non-string or blank approved scripts", async () => {
     const noPlaywright = await createRepository({ includePlaywright: false });
     await expect(preflightRepository(noPlaywright)).resolves.toMatchObject({
       status: "unsupported",
       failure: { code: "playwright_not_configured" }
     });
+    const incompatiblePlaywright = await createRepository({ playwrightConfigContent: "export default {};" });
+    await expect(preflightRepository(incompatiblePlaywright)).resolves.toMatchObject({
+      status: "unsupported",
+      failure: { code: "playwright_not_configured" }
+    });
+    for (const playwrightConfigContent of [
+      "const baseURL = process.env.FAILSPEC_BASE_URL; export default { baseURL };",
+      "const managed = process.env.FAILSPEC_MANAGED_SERVER; export default { managed };"
+    ]) {
+      const repository = await createRepository({ playwrightConfigContent });
+      await expect(preflightRepository(repository)).resolves.toMatchObject({
+        status: "unsupported",
+        failure: { code: "playwright_not_configured" }
+      });
+    }
 
     for (const scripts of [
       { dev: true, "test:generated": approvedGeneratedTestScript },
@@ -376,6 +403,7 @@ interface RepositoryOptions {
   includePlaywright?: boolean;
   includeLockfile?: boolean;
   scripts?: Record<string, unknown>;
+  playwrightConfigContent?: string;
 }
 
 async function createRepository(options: RepositoryOptions = {}): Promise<string> {
@@ -407,7 +435,11 @@ async function createRepository(options: RepositoryOptions = {}): Promise<string
   if (options.includeLockfile !== false) {
     await writeFile(join(directory, "package-lock.json"), "{}", "utf8");
   }
-  await writeFile(join(directory, "playwright.config.ts"), "export default {};", "utf8");
+  await writeFile(
+    join(directory, "playwright.config.ts"),
+    options.playwrightConfigContent ?? "const baseURL = process.env.FAILSPEC_BASE_URL;\nconst managed = process.env.FAILSPEC_MANAGED_SERVER;\nexport default { baseURL, managed };",
+    "utf8"
+  );
   await run("git", ["init", directory]);
   await run("git", ["-C", directory, "config", "user.email", "test@example.com"]);
   await run("git", ["-C", directory, "config", "user.name", "Test User"]);

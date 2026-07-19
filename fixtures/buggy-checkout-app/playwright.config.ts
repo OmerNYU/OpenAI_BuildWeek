@@ -1,14 +1,9 @@
 import { defineConfig } from "@playwright/test";
+import { createPlaywrightSettings } from "./playwright-settings.js";
 
-export default defineConfig({
-  testDir: "./tests",
-  timeout: 30_000,
-  use: {
-    baseURL: "http://127.0.0.1:3100"
-  },
-  webServer: {
-    command: "npm run dev -- --hostname 127.0.0.1 --port 3100",
-    port: 3100,
-    reuseExistingServer: false
-  }
-});
+const runnerEnvironment = {
+  FAILSPEC_BASE_URL: process.env.FAILSPEC_BASE_URL,
+  FAILSPEC_MANAGED_SERVER: process.env.FAILSPEC_MANAGED_SERVER
+};
+
+export default defineConfig(createPlaywrightSettings(runnerEnvironment));

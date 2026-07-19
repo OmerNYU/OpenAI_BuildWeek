@@ -82,6 +82,7 @@ const installStateFile = "npm-install-state.json";
 const installLogFile = "npm-install.log";
 const gitTimeoutMs = 2_000;
 const gitRevParseOutputLimit = 4_096;
+const runnerConfigurationMarkers = ["FAILSPEC_BASE_URL", "FAILSPEC_MANAGED_SERVER"];
 
 export async function preflightRepository(
   repositoryPath: string,
@@ -429,11 +430,14 @@ async function hasPlaywrightSetup(repositoryPath: string, packageJson: PackageJs
     return false;
   }
 
-  return (await Promise.all(
+  const configurations = await Promise.all(
     ["playwright.config.ts", "playwright.config.js", "playwright.config.mjs"].map((name) =>
-      readFile(join(repositoryPath, name)).then(() => true).catch(() => false)
+      readFile(join(repositoryPath, name), "utf8").catch(() => undefined)
     )
-  )).some(Boolean);
+  );
+  return configurations.some((configuration) =>
+    configuration !== undefined && runnerConfigurationMarkers.every((marker) => configuration.includes(marker))
+  );
 }
 
 function hasApprovedScripts(packageJson: PackageJson): packageJson is PackageJson & {
