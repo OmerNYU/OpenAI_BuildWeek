@@ -47,7 +47,9 @@ $env:FAILSPEC_CODEX_MODE = "local"
 npm run dev:server
 ```
 
-Local mode performs real read-only repository analysis and test generation through Codex. Runner execution and verdict classification remain mocked; no real Playwright test is executed.
+Mock mode uses pass-through repository preparation: it performs no Git commands or preflight checks and uses the submitted repository path directly. Local mode runs repository preflight, creates a detached FailSpec-owned worktree, and runs Codex analysis and test generation against that worktree. The runner boundary also receives the worktree path. After successful preparation, FailSpec attempts cleanup after both successful and failed workflows.
+
+Runner execution and verdict classification remain mocked; generated-test staging and real Playwright execution are not implemented.
 
 ## Investigation API
 
@@ -82,4 +84,4 @@ npm run build
 
 ## Current scaffold limitations
 
-The frontend supports bug-report submission, investigation progress, polling through the existing API, and terminal summaries. The real Codex adapter is integrated behind `FAILSPEC_CODEX_MODE=local` and performs real Codex analysis and test generation. Integration of repository preflight, isolated worktrees, generated-test staging, real Playwright execution, evidence propagation, and evidence-based verdict classification remains incomplete; runner execution and the final verdict remain mocked.
+The frontend supports bug-report submission, investigation progress, polling through the existing API, and terminal summaries. The real Codex adapter is integrated behind `FAILSPEC_CODEX_MODE=local` and performs repository preflight plus analysis and test generation in an isolated worktree. Cleanup is in-process only and has no durable recovery after a server restart. Generated-test staging, real Playwright execution, execution-evidence collection, and evidence-based verdict classification remain incomplete; runner execution and the final verdict remain mocked.

@@ -12,6 +12,10 @@ import {
   InProcessWorkflowScheduler,
   type WorkflowScheduler
 } from "../src/scheduling/workflow-scheduler.js";
+import {
+  LocalRepositoryWorkspace,
+  PassThroughRepositoryWorkspace
+} from "../src/repository/repository-workspace.js";
 
 const requestBody = {
   repositoryPath: "C:/repos/checkout-app",
@@ -51,6 +55,7 @@ describe("runtime dependency construction", () => {
 
     expect(dependencies.codexAdapter).toBeInstanceOf(MockCodexAdapter);
     expect(dependencies.scheduler).toBeInstanceOf(InProcessWorkflowScheduler);
+    expect(dependencies.repositoryWorkspace).toBeInstanceOf(PassThroughRepositoryWorkspace);
   });
 
   it("selects the deterministic mock adapter for explicit mock mode", () => {
@@ -60,6 +65,7 @@ describe("runtime dependency construction", () => {
     });
 
     expect(dependencies.codexAdapter).toBeInstanceOf(MockCodexAdapter);
+    expect(dependencies.repositoryWorkspace).toBeInstanceOf(PassThroughRepositoryWorkspace);
   });
 
   it("constructs the real adapter for local mode with an injected executor", () => {
@@ -70,6 +76,7 @@ describe("runtime dependency construction", () => {
     });
 
     expect(dependencies.codexAdapter).toBeInstanceOf(CodexInvestigationAdapter);
+    expect(dependencies.repositoryWorkspace).toBeInstanceOf(LocalRepositoryWorkspace);
   });
 
   it("rejects unsupported modes during dependency construction", () => {
@@ -115,7 +122,8 @@ describe("runtime dependency construction", () => {
       {
         env: { FAILSPEC_CODEX_MODE: "local" },
         codexCliExecutor: executor,
-        investigationDirectory: storageDirectory
+        investigationDirectory: storageDirectory,
+        repositoryWorkspace: new PassThroughRepositoryWorkspace()
       },
       scheduler
     );
@@ -163,7 +171,8 @@ describe("runtime dependency construction", () => {
       {
         env: { FAILSPEC_CODEX_MODE: "local" },
         codexCliExecutor: executor,
-        investigationDirectory: storageDirectory
+        investigationDirectory: storageDirectory,
+        repositoryWorkspace: new PassThroughRepositoryWorkspace()
       },
       scheduler
     );
@@ -185,7 +194,8 @@ describe("runtime dependency construction", () => {
       {
         env: { FAILSPEC_CODEX_MODE: "local" },
         codexCliExecutor: executor,
-        investigationDirectory: storageDirectory
+        investigationDirectory: storageDirectory,
+        repositoryWorkspace: new PassThroughRepositoryWorkspace()
       },
       scheduler
     );

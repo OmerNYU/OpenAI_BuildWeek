@@ -114,6 +114,16 @@ Record only decisions confirmed by the team. Do not add speculative or unapprove
 - **Consequences:** `POST` returns the persisted initial state and clients poll `GET` for progress. Scheduled work is not durable across server restarts, and no recovery mechanism exists.
 - **Owners:** Person 1
 
+### Isolated repository orchestration
+
+- **Date:** 2026-07-19
+- **Decision:** Local Codex and runner operations use a detached FailSpec-owned worktree after repository preflight; mock mode uses an injected pass-through workspace implementation.
+- **Context:** Keep local investigation operations isolated from submitted source repositories while preserving the deterministic mock workflow.
+- **Alternatives considered:** Operate directly in the submitted repository or require a real Git repository in mock mode.
+- **Rationale:** Preflight and a detached owned worktree keep local operations within Person 3's repository-safety boundary, while pass-through mode keeps the mock API usable for arbitrary test paths.
+- **Consequences:** Cleanup is required before a successful terminal completion. Cleanup is not durable or recoverable across server restarts. Generated-test staging and real Playwright execution remain deferred.
+- **Owners:** Persons 1 and 3
+
 ### Execution and verification boundary
 
 - **Date:** 2026-07-18
