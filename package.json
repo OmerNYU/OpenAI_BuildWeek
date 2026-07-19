@@ -11,7 +11,7 @@
   ],
   "scripts": {
     "lint": "eslint apps packages",
-    "typecheck": "npm run build --workspace @failspec/contracts && npm run typecheck --workspace @failspec/contracts && npm run typecheck --workspace @failspec/core && npm run typecheck --workspace @failspec/server && npm run typecheck --workspace @failspec/web",
+    "typecheck": "npm run build --workspace @failspec/contracts && npm run build --workspace @failspec/core && npm run typecheck --workspace @failspec/contracts && npm run typecheck --workspace @failspec/core && npm run typecheck --workspace @failspec/server && npm run typecheck --workspace @failspec/web",
     "test": "npm run build --workspace @failspec/contracts && npm run build --workspace @failspec/core && npm run test --workspace @failspec/contracts && npm run test --workspace @failspec/core && npm run test --workspace @failspec/server && npm run test --workspace @failspec/web",
     "build": "npm run build --workspace @failspec/contracts && npm run build --workspace @failspec/core && npm run build --workspace @failspec/server && npm run build --workspace @failspec/web",
     "dev:web": "npm run dev --workspace @failspec/web",

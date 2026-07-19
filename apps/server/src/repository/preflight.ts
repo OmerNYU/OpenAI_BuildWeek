@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFile, lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
-import { isAbsolute, join, relative } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import type { RepositoryPreflightResult } from "@failspec/contracts";
 
 export const approvedScriptNames = ["dev", "test:generated"] as const;
@@ -101,7 +101,7 @@ export async function preflightRepository(
   if (gitRoot.kind !== "completed") {
     return failed("inspection_failed");
   }
-  if (gitRoot.exitCode !== 0 || gitRoot.output.trim() !== canonicalPath) {
+  if (gitRoot.exitCode !== 0 || await canonicalGitDirectory(gitRoot.output) !== canonicalPath) {
     return unsupported("not_git_repository");
   }
 
@@ -271,6 +271,19 @@ const systemGitRunner: GitRunner = {
 async function canonicalDirectory(path: string): Promise<string | undefined> {
   try {
     const canonicalPath = await realpath(path);
+    return (await stat(canonicalPath)).isDirectory() ? canonicalPath : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function canonicalGitDirectory(output: string): Promise<string | undefined> {
+  const reportedPath = output.trim();
+  if (!reportedPath) {
+    return undefined;
+  }
+  try {
+    const canonicalPath = await realpath(reportedPath.replace(/[\\/]/g, sep));
     return (await stat(canonicalPath)).isDirectory() ? canonicalPath : undefined;
   } catch {
     return undefined;
