@@ -132,7 +132,7 @@ describe("repository preflight", () => {
     expect(approvedGeneratedTestScript).toBe("playwright test tests/generated");
   });
 
-  it("bounds Git inspection and classifies timeout, capped output, and first status output", async () => {
+  it("bounds Git inspection, canonicalizes Git roots, and classifies first status output", async () => {
     const repository = await createRepository();
     const canonicalPath = await realpath(repository);
 
@@ -182,6 +182,31 @@ describe("repository preflight", () => {
       args: ["status", "--porcelain", "--untracked-files=normal"],
       maxOutputBytes: 1,
       stopOnOutput: true
+    });
+
+    const reportedPath = process.platform === "win32"
+      ? canonicalPath.replaceAll("\\", "/")
+      : canonicalPath.replaceAll("/", "\\");
+    const canonicalPathRunner: GitRunner = {
+      run: async (_cwd, args) => args[0] === "rev-parse"
+        ? { kind: "completed", exitCode: 0, output: `${reportedPath}\r\n` }
+        : { kind: "completed", exitCode: 0, output: "" }
+    };
+    await expect(preflightRepository(repository, { gitRunner: canonicalPathRunner })).resolves.toMatchObject({
+      status: "ready",
+      repositoryPath: canonicalPath
+    });
+
+    const otherRepository = await createRepository();
+    const otherCanonicalPath = await realpath(otherRepository);
+    const differentPathRunner: GitRunner = {
+      run: async (_cwd, args) => args[0] === "rev-parse"
+        ? { kind: "completed", exitCode: 0, output: `${otherCanonicalPath}\r\n` }
+        : { kind: "completed", exitCode: 0, output: "" }
+    };
+    await expect(preflightRepository(repository, { gitRunner: differentPathRunner })).resolves.toMatchObject({
+      status: "unsupported",
+      failure: { code: "not_git_repository" }
     });
   });
 
@@ -283,7 +308,7 @@ describe("repository preflight", () => {
   it("rejects a repository-controlled .failspec symlink without writing to its target", async () => {
     const worktreePath = await createRepository();
     const victimPath = await createDirectory();
-    await symlink(victimPath, join(worktreePath, ".failspec"));
+    await createDirectoryLink(victimPath, join(worktreePath, ".failspec"));
 
     await expect(planDependencyInstall(worktreePath)).resolves.toEqual({
       kind: "unavailable",
@@ -300,7 +325,10 @@ describe("repository preflight", () => {
     await expect(readdir(victimPath)).resolves.toEqual([]);
   });
 
-  it("rejects symlinked state and log files", async () => {
+  it("rejects symlinked state and log files on POSIX", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
     for (const fileName of ["npm-install-state.json", "npm-install.log"]) {
       const worktreePath = await createRepository();
       const victimPath = await createDirectory();
@@ -336,6 +364,10 @@ async function createDirectory(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "failspec-preflight-"));
   directories.push(directory);
   return directory;
+}
+
+async function createDirectoryLink(target: string, path: string): Promise<void> {
+  await symlink(target, path, process.platform === "win32" ? "junction" : "dir");
 }
 
 interface RepositoryOptions {
