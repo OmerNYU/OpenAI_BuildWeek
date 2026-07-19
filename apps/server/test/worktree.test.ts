@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeF
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   cleanupIsolatedWorktree,
   prepareIsolatedWorktree,
@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 describe("isolated worktrees", () => {
-  it("creates a detached worktree from committed HEAD and cleans it without changing the source", async () => {
+  it("creates a detached worktree in a reserved empty destination and cleans it without changing the source", async () => {
     const sourceRepositoryPath = await createRepository();
     const rootPath = await createDirectory();
     const prepared = await prepareIsolatedWorktree(sourceRepositoryPath, "investigation-24", { testRootPath: rootPath });
@@ -106,6 +106,103 @@ describe("isolated worktrees", () => {
       failure: "creation_failed",
       cleanupAuthorized: false
     });
+  });
+
+  it("does not overwrite a destination that wins the atomic reservation race", async () => {
+    const sourceRepositoryPath = await createRepository();
+    const rootPath = await createDirectory();
+    const investigationId = "race-loss";
+    const destinationPath = join(rootPath, investigationId);
+    const sentinelPath = join(destinationPath, "sentinel.txt");
+    await mkdir(destinationPath);
+    await writeFile(sentinelPath, "foreign directory", "utf8");
+
+    await expect(prepareIsolatedWorktreeAttempt(sourceRepositoryPath, investigationId, {
+      testRootPath: rootPath
+    })).resolves.toEqual({
+      status: "failed",
+      failure: "invalid_destination",
+      cleanupAuthorized: false
+    });
+    await expect(readFile(sentinelPath, "utf8")).resolves.toBe("foreign directory");
+    await expect(readFile(join(rootPath, `${investigationId}.json`), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not recursively remove a reservation when initial metadata writing fails", async () => {
+    const sourceRepositoryPath = await createRepository();
+    const rootPath = await createDirectory();
+    const investigationId = "initial-metadata-failure";
+    const sentinelPath = join(rootPath, investigationId, "sentinel.txt");
+
+    await expect(prepareIsolatedWorktreeAttempt(sourceRepositoryPath, investigationId, {
+      testRootPath: rootPath,
+      testHooks: {
+        beforeInitialMetadataWrite: async () => {
+          await writeFile(sentinelPath, "preserve this", "utf8");
+          throw new Error("metadata failure");
+        }
+      }
+    })).resolves.toEqual({
+      status: "failed",
+      failure: "metadata_failed",
+      cleanupAuthorized: false
+    });
+    await expect(readFile(sentinelPath, "utf8")).resolves.toBe("preserve this");
+    await expect(readFile(join(rootPath, `${investigationId}.json`), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not remove an empty replacement when initial metadata writing fails", async () => {
+    const sourceRepositoryPath = await createRepository();
+    const rootPath = await createDirectory();
+    const investigationId = "initial-metadata-replacement";
+    const destinationPath = join(rootPath, investigationId);
+
+    await expect(prepareIsolatedWorktreeAttempt(sourceRepositoryPath, investigationId, {
+      testRootPath: rootPath,
+      testHooks: {
+        beforeInitialMetadataWrite: async () => {
+          await rm(destinationPath, { recursive: true, force: true });
+          await mkdir(destinationPath);
+          throw new Error("metadata failure");
+        }
+      }
+    })).resolves.toEqual({
+      status: "failed",
+      failure: "metadata_failed",
+      cleanupAuthorized: false
+    });
+    await expect(readdir(destinationPath)).resolves.toEqual([]);
+    await expect(readFile(join(rootPath, `${investigationId}.json`), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not invoke Git when the reserved destination is replaced before worktree add", async () => {
+    const sourceRepositoryPath = await createRepository();
+    const rootPath = await createDirectory();
+    const canonicalSourcePath = await realpath(sourceRepositoryPath);
+    const investigationId = "replacement-before-git";
+    const destinationPath = join(rootPath, investigationId);
+    const runner: WorktreeGitRunner & { run: ReturnType<typeof vi.fn> } = {
+      run: vi.fn(async (_cwd, args) => args[0] === "rev-parse"
+        ? { kind: "completed" as const, exitCode: 0, output: canonicalSourcePath }
+        : { kind: "completed" as const, exitCode: 0, output: "" })
+    };
+
+    await expect(prepareIsolatedWorktreeAttempt(sourceRepositoryPath, investigationId, {
+      testRootPath: rootPath,
+      gitRunner: runner,
+      testHooks: {
+        beforeGitWorktreeAdd: async () => {
+          await rm(destinationPath, { recursive: true, force: true });
+          await mkdir(destinationPath);
+        }
+      }
+    })).resolves.toEqual({
+      status: "failed",
+      failure: "creation_failed",
+      cleanupAuthorized: true
+    });
+    expect(runner.run).toHaveBeenCalledTimes(1);
+    await expect(readdir(destinationPath)).resolves.toEqual([]);
   });
 
   it("uses the approved Windows application root and fails closed without LOCALAPPDATA", async () => {
@@ -255,11 +352,11 @@ describe("isolated worktrees", () => {
     await expect(readdir(worktreePath)).resolves.toEqual(expect.any(Array));
   });
 
-  it("does not remove an unrecognized destination after a failed worktree add", async () => {
+  it("removes a verified reserved partial destination after a failed worktree add", async () => {
     const sourceRepositoryPath = await createRepository();
     const rootPath = await createDirectory();
     const canonicalSourcePath = await realpath(sourceRepositoryPath);
-    const investigationId = "unrecognized-destination";
+    const investigationId = "reserved-partial";
     const sentinelPath = join(rootPath, investigationId, "sentinel.txt");
     const runner: WorktreeGitRunner = {
       run: async (cwd, args) => {
@@ -267,7 +364,6 @@ describe("isolated worktrees", () => {
           return { kind: "completed", exitCode: 0, output: canonicalSourcePath };
         }
         if (args[0] === "worktree" && args[1] === "add") {
-          await mkdir(args[3] ?? "");
           await writeFile(sentinelPath, "do not remove", "utf8");
           return { kind: "completed", exitCode: 1, output: "" };
         }
@@ -287,9 +383,86 @@ describe("isolated worktrees", () => {
     await expect(cleanupIsolatedWorktree(investigationId, {
       testRootPath: rootPath,
       gitRunner: runner
+    })).resolves.toEqual({ status: "cleaned" });
+    await expect(readFile(sentinelPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(rootPath, `${investigationId}.json`), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not invoke Git cleanup for a replaced completed worktree destination", async () => {
+    const sourceRepositoryPath = await createRepository();
+    const rootPath = await createDirectory();
+    const prepared = await prepareIsolatedWorktree(sourceRepositoryPath, "completed-replaced", {
+      testRootPath: rootPath
+    });
+    if (prepared.status !== "prepared") {
+      throw new Error("Expected a prepared worktree.");
+    }
+    const sentinelPath = join(prepared.worktreePath, "sentinel.txt");
+    await rm(prepared.worktreePath, { recursive: true, force: true });
+    await Promise.all(
+      Array.from({ length: 8 }, (_, index) => mkdir(join(rootPath, `identity-consumer-${index}`)))
+    );
+    await mkdir(prepared.worktreePath);
+    await writeFile(sentinelPath, "replacement", "utf8");
+    const runner: WorktreeGitRunner & { run: ReturnType<typeof vi.fn> } = {
+      run: vi.fn(async (_cwd, args) => args[1] === "list"
+        ? { kind: "completed" as const, exitCode: 0, output: `worktree ${prepared.worktreePath}\n` }
+        : { kind: "completed" as const, exitCode: 0, output: "" })
+    };
+
+    await expect(cleanupIsolatedWorktree("completed-replaced", {
+      testRootPath: rootPath,
+      gitRunner: runner
     })).resolves.toEqual({ status: "failed", failure: { code: "cleanup_failed" } });
-    await expect(readFile(sentinelPath, "utf8")).resolves.toBe("do not remove");
-    await expect(readFile(join(rootPath, `${investigationId}.json`), "utf8")).resolves.toContain('"creationComplete":false');
+    expect(runner.run).not.toHaveBeenCalled();
+    await expect(readFile(sentinelPath, "utf8")).resolves.toBe("replacement");
+    await expect(readFile(join(rootPath, "completed-replaced.json"), "utf8")).resolves.toContain('"creationComplete":true');
+  });
+
+  it("fails closed when partial metadata or the reserved destination is replaced", async () => {
+    const sourceRepositoryPath = await createRepository();
+    const rootPath = await createDirectory();
+    const canonicalSourcePath = await realpath(sourceRepositoryPath);
+    const investigationId = "tampered-partial";
+    const destinationPath = join(rootPath, investigationId);
+    const sentinelPath = join(destinationPath, "sentinel.txt");
+    const runner: WorktreeGitRunner = {
+      run: async (_cwd, args) => {
+        if (args[0] === "rev-parse") {
+          return { kind: "completed", exitCode: 0, output: canonicalSourcePath };
+        }
+        if (args[0] === "worktree" && args[1] === "add") {
+          await writeFile(sentinelPath, "reserved", "utf8");
+          return { kind: "completed", exitCode: 1, output: "" };
+        }
+        if (args[0] === "worktree" && args[1] === "list") {
+          return { kind: "completed", exitCode: 0, output: "" };
+        }
+        return { kind: "failed" };
+      }
+    };
+    await prepareIsolatedWorktreeAttempt(sourceRepositoryPath, investigationId, {
+      testRootPath: rootPath,
+      gitRunner: runner
+    });
+    const originalMetadata = await readFile(join(rootPath, `${investigationId}.json`), "utf8");
+
+    await expect(cleanupIsolatedWorktree(investigationId, {
+      testRootPath: rootPath,
+      gitRunner: runner,
+      testHooks: { beforePartialCleanup: () => writeFile(join(rootPath, `${investigationId}.json`), "{}", "utf8") }
+    })).resolves.toEqual({ status: "failed", failure: { code: "cleanup_failed" } });
+    await expect(readFile(sentinelPath, "utf8")).resolves.toBe("reserved");
+
+    await writeFile(join(rootPath, `${investigationId}.json`), originalMetadata, "utf8");
+    await rm(destinationPath, { recursive: true, force: true });
+    await mkdir(destinationPath);
+    await writeFile(sentinelPath, "replacement", "utf8");
+    await expect(cleanupIsolatedWorktree(investigationId, {
+      testRootPath: rootPath,
+      gitRunner: runner
+    })).resolves.toEqual({ status: "failed", failure: { code: "cleanup_failed" } });
+    await expect(readFile(sentinelPath, "utf8")).resolves.toBe("replacement");
   });
 
   it("rejects unsafe metadata states and cleans valid metadata whose destination is already gone", async () => {
