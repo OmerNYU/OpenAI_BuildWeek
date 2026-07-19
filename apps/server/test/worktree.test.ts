@@ -89,6 +89,15 @@ describe("isolated worktrees", () => {
     await expect(prepareIsolatedWorktree(sourceRepositoryPath, "no-local-app-data", {
       testHooks: { platform: "win32" as const, environment: {} }
     })).resolves.toEqual({ status: "failed", failure: { code: "invalid_destination" } });
+    await expect(prepareIsolatedWorktree(sourceRepositoryPath, "relative-local-app-data", {
+      testHooks: { platform: "win32" as const, environment: { LOCALAPPDATA: "relative" } }
+    })).resolves.toEqual({ status: "failed", failure: { code: "invalid_destination" } });
+
+    const linkedLocalAppData = await createDirectory();
+    await createDirectoryLink(await createDirectory(), join(linkedLocalAppData, "FailSpec"));
+    await expect(prepareIsolatedWorktree(sourceRepositoryPath, "linked-application-path", {
+      testHooks: { platform: "win32" as const, environment: { LOCALAPPDATA: linkedLocalAppData } }
+    })).resolves.toEqual({ status: "failed", failure: { code: "invalid_destination" } });
   });
 
   it("normalizes Git paths and CRLF porcelain output before ownership comparison", async () => {
@@ -233,6 +242,26 @@ describe("isolated worktrees", () => {
     }
     await run("git", ["-C", sourceRepositoryPath, "worktree", "remove", "--force", prepared.worktreePath]);
     await expect(cleanupIsolatedWorktree("already-removed", { testRootPath: rootPath })).resolves.toEqual({ status: "cleaned" });
+  });
+
+  it("rejects linked metadata even when the external target is valid", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const sourceRepositoryPath = await createRepository();
+    const rootPath = await createDirectory();
+    const externalMetadataPath = join(await createDirectory(), "metadata.json");
+    await writeFile(externalMetadataPath, JSON.stringify({
+      investigationId: "linked-valid",
+      sourceRepositoryPath,
+      worktreePath: join(rootPath, "linked-valid"),
+      creationComplete: true
+    }), "utf8");
+    await symlink(externalMetadataPath, join(rootPath, "linked-valid.json"), "file");
+
+    await expect(cleanupIsolatedWorktree("linked-valid", { testRootPath: rootPath })).resolves.toEqual({
+      status: "failed", failure: { code: "cleanup_failed" }
+    });
   });
 
   it("rejects unsafe existing POSIX roots and non-canonical metadata sources", async () => {

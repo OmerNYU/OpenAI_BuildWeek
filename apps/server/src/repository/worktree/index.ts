@@ -357,6 +357,9 @@ async function writeMetadata(
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
   try {
     if (!exclusive) {
+      if (!(await isSafeMetadataFile(path))) {
+        return false;
+      }
       const existing = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
       const entry = await existing.stat();
       await existing.close();
@@ -388,6 +391,13 @@ type MetadataReadResult =
   | { kind: "valid"; metadata: OwnershipMetadata };
 
 async function readMetadata(path: string): Promise<MetadataReadResult> {
+  const fileState = await metadataFileState(path);
+  if (fileState === "absent") {
+    return { kind: "absent" };
+  }
+  if (fileState !== "safe") {
+    return { kind: "invalid" };
+  }
   try {
     const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     const entry = await handle.stat();
@@ -416,6 +426,22 @@ async function readMetadata(path: string): Promise<MetadataReadResult> {
     return { kind: "valid", metadata: parsed as OwnershipMetadata };
   } catch (error: unknown) {
     return isMissingFileError(error) ? { kind: "absent" } : { kind: "invalid" };
+  }
+}
+
+async function isSafeMetadataFile(path: string): Promise<boolean> {
+  return (await metadataFileState(path)) === "safe";
+}
+
+async function metadataFileState(path: string): Promise<"absent" | "invalid" | "safe"> {
+  try {
+    const entry = await lstat(path);
+    if (entry.isSymbolicLink() || !entry.isFile()) {
+      return "invalid";
+    }
+    return await realpath(path) === path ? "safe" : "invalid";
+  } catch (error: unknown) {
+    return isMissingFileError(error) ? "absent" : "invalid";
   }
 }
 
