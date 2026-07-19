@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, rename, rmdir, stat, unlink } from "node:fs/promises";
+import { link, lstat, mkdir, open, realpath, rename, stat, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import type { WorktreeFailureCode, WorktreePreparationResult } from "@failspec/contracts";
@@ -14,8 +14,6 @@ interface OwnershipMetadata {
   sourceRepositoryPath: string;
   worktreePath: string;
   creationComplete: boolean;
-  destinationDevice: number;
-  destinationInode: number;
 }
 
 export interface WorktreeGitResult {
@@ -36,9 +34,9 @@ export interface WorktreeOptions {
   testHooks?: {
     platform?: NodeJS.Platform;
     environment?: NodeJS.ProcessEnv;
-    afterDestinationMkdir?: () => void | Promise<void>;
-    beforeInitialMetadataWrite?: () => void | Promise<void>;
-    beforeGitWorktreeAdd?: () => void | Promise<void>;
+    generateDestinationSuffix?: () => string;
+    afterInitialMetadataOpen?: () => void | Promise<void>;
+    beforeInitialMetadataPublish?: () => void | Promise<void>;
     beforeMetadataUpdate?: () => void | Promise<void>;
   };
 }
@@ -82,16 +80,11 @@ export async function prepareIsolatedWorktreeAttempt(
   const rootConfiguration = await configuredRoot(options);
   const rootPath = await ownedRoot(rootConfiguration, true);
   const sourcePath = await canonicalDirectory(sourceRepositoryPath);
-  if (!rootPath || !isSafeInvestigationId(investigationId)) {
+  if (!rootConfiguration || !rootPath || !isSafeInvestigationId(investigationId)) {
     return attemptFailure("invalid_destination");
   }
   if (!sourcePath) {
     return attemptFailure("creation_failed");
-  }
-
-  const worktreePath = join(rootPath, investigationId);
-  if (!isInside(rootPath, worktreePath) || await exists(worktreePath)) {
-    return attemptFailure("invalid_destination");
   }
 
   const metadataPath = join(rootPath, `${investigationId}.json`);
@@ -99,45 +92,46 @@ export async function prepareIsolatedWorktreeAttempt(
     return attemptFailure("invalid_destination");
   }
 
-  const gitRunner = options.gitRunner ?? systemGitRunner;
-  const sourceRoot = await gitRunner.run(sourcePath, ["rev-parse", "--show-toplevel"]);
-  if (
-    sourceRoot.kind !== "completed" ||
-    sourceRoot.exitCode !== 0 ||
-    await canonicalGitDirectory(sourceRoot.output, rootConfiguration?.platform) !== sourcePath
-  ) {
-    return attemptFailure("creation_failed");
-  }
-
-  const destinationIdentity = await reserveWorktreeDestination(
+  const worktreePath = generatedWorktreePath(
     rootPath,
-    worktreePath,
-    options.testHooks?.afterDestinationMkdir
+    investigationId,
+    options.testHooks?.generateDestinationSuffix
   );
-  if (!destinationIdentity) {
+  if (
+    !worktreePath ||
+    !(await hasCanonicalUnsymlinkedPath(worktreePath)) ||
+    await exists(worktreePath)
+  ) {
     return attemptFailure("invalid_destination");
   }
 
-  const metadata: OwnershipMetadata = {
+  const provisionalMetadata: OwnershipMetadata = {
     investigationId,
     sourceRepositoryPath: sourcePath,
     worktreePath,
-    creationComplete: false,
-    destinationDevice: destinationIdentity.destinationDevice,
-    destinationInode: destinationIdentity.destinationInode
+    creationComplete: false
   };
-  if (!(await writeMetadata(
+  if (!(await writeInitialMetadata(
     metadataPath,
-    metadata,
-    true,
-    options.testHooks?.beforeInitialMetadataWrite
+    provisionalMetadata,
+    options.testHooks?.afterInitialMetadataOpen,
+    options.testHooks?.beforeInitialMetadataPublish
   ))) {
-    await removeEmptyReservedDestination(rootPath, worktreePath, destinationIdentity);
     return attemptFailure("metadata_failed");
   }
 
-  await options.testHooks?.beforeGitWorktreeAdd?.();
-  if (!(await hasExpectedDestinationIdentity(rootPath, worktreePath, destinationIdentity))) {
+  const gitRunner = options.gitRunner ?? systemGitRunner;
+  let sourceRoot: WorktreeGitResult;
+  try {
+    sourceRoot = await gitRunner.run(sourcePath, ["rev-parse", "--show-toplevel"]);
+  } catch {
+    return attemptFailure("creation_failed", true);
+  }
+  if (
+    sourceRoot.kind !== "completed" ||
+    sourceRoot.exitCode !== 0 ||
+    await canonicalGitDirectory(sourceRoot.output, rootConfiguration.platform) !== sourcePath
+  ) {
     return attemptFailure("creation_failed", true);
   }
 
@@ -145,14 +139,28 @@ export async function prepareIsolatedWorktreeAttempt(
   try {
     created = await gitRunner.run(sourcePath, ["worktree", "add", "--detach", worktreePath, "HEAD"]);
   } catch {
+    await removeRecognizedWorktree(sourcePath, worktreePath, rootConfiguration, gitRunner);
     return attemptFailure("creation_failed", true);
   }
   if (created.kind !== "completed" || created.exitCode !== 0) {
+    await removeRecognizedWorktree(sourcePath, worktreePath, rootConfiguration, gitRunner);
+    return attemptFailure("creation_failed", true);
+  }
+  if (!(await gitRecognizesWorktree(sourcePath, worktreePath, rootConfiguration, gitRunner))) {
     return attemptFailure("creation_failed", true);
   }
 
-  metadata.creationComplete = true;
-  if (!(await writeMetadata(metadataPath, metadata, false, options.testHooks?.beforeMetadataUpdate))) {
+  const completedMetadata: OwnershipMetadata = {
+    ...provisionalMetadata,
+    creationComplete: true
+  };
+  if (!(await updateMetadata(
+    metadataPath,
+    provisionalMetadata,
+    completedMetadata,
+    options.testHooks?.beforeMetadataUpdate
+  ))) {
+    await removeRecognizedWorktree(sourcePath, worktreePath, rootConfiguration, gitRunner);
     return attemptFailure("metadata_failed", true);
   }
 
@@ -165,22 +173,17 @@ export async function cleanupIsolatedWorktree(
 ): Promise<WorktreeCleanupResult> {
   const rootConfiguration = await configuredRoot(options);
   const rootPath = await ownedRoot(rootConfiguration, false);
-  if (!rootPath || !isSafeInvestigationId(investigationId)) {
+  if (!rootConfiguration || !rootPath || !isSafeInvestigationId(investigationId)) {
     return cleanupFailure();
   }
 
-  const worktreePath = join(rootPath, investigationId);
   const metadataPath = join(rootPath, `${investigationId}.json`);
-  if (
-    !isInside(rootPath, worktreePath) ||
-    !isInside(rootPath, metadataPath)
-  ) {
+  if (!isInside(rootPath, metadataPath)) {
     return cleanupFailure();
   }
 
   const metadataResult = await readMetadata(metadataPath);
-  const destinationExists = await exists(worktreePath);
-  if (metadataResult.kind === "absent" && !destinationExists) {
+  if (metadataResult.kind === "absent") {
     return { status: "cleaned" };
   }
   if (metadataResult.kind !== "valid") {
@@ -189,33 +192,22 @@ export async function cleanupIsolatedWorktree(
   const metadata = metadataResult.metadata;
   if (
     metadata.investigationId !== investigationId ||
-    metadata.worktreePath !== worktreePath ||
-    !(await canonicalDirectory(metadata.sourceRepositoryPath))
+    !(await isGeneratedWorktreePath(rootPath, metadata.worktreePath, investigationId)) ||
+    await canonicalDirectory(metadata.sourceRepositoryPath) !== metadata.sourceRepositoryPath
   ) {
     return cleanupFailure();
   }
+  const worktreePath = metadata.worktreePath;
 
-  if (!destinationExists) {
+  if (!(await exists(worktreePath))) {
     return (await removeMetadata(metadataPath)) ? { status: "cleaned" } : cleanupFailure();
   }
-  if (!(await hasExpectedDestinationIdentity(rootPath, worktreePath, metadata))) {
+  if (!(await isCanonicalDestinationPath(rootPath, worktreePath))) {
     return cleanupFailure();
   }
 
   const gitRunner = options.gitRunner ?? systemGitRunner;
-  const listed = await gitRunner.run(metadata.sourceRepositoryPath, ["worktree", "list", "--porcelain"]);
-  const recognized = listed.kind === "completed" && listed.exitCode === 0 &&
-    await gitListsWorktree(listed.output, worktreePath, rootConfiguration?.platform);
-
-  if (recognized) {
-    const removed = await gitRunner.run(metadata.sourceRepositoryPath, ["worktree", "remove", "--force", worktreePath]);
-    if (removed.kind !== "completed" || removed.exitCode !== 0) {
-      return cleanupFailure();
-    }
-    if (await exists(worktreePath)) {
-      return cleanupFailure();
-    }
-  } else {
+  if (!(await removeRecognizedWorktree(metadata.sourceRepositoryPath, worktreePath, rootConfiguration, gitRunner))) {
     return cleanupFailure();
   }
 
@@ -342,6 +334,39 @@ async function gitListsWorktree(output: string | undefined, worktreePath: string
   return false;
 }
 
+async function gitRecognizesWorktree(
+  sourceRepositoryPath: string,
+  worktreePath: string,
+  rootConfiguration: RootConfiguration,
+  gitRunner: WorktreeGitRunner
+): Promise<boolean> {
+  try {
+    const listed = await gitRunner.run(sourceRepositoryPath, ["worktree", "list", "--porcelain"]);
+    return listed.kind === "completed" &&
+      listed.exitCode === 0 &&
+      await gitListsWorktree(listed.output, worktreePath, rootConfiguration.platform);
+  } catch {
+    return false;
+  }
+}
+
+async function removeRecognizedWorktree(
+  sourceRepositoryPath: string,
+  worktreePath: string,
+  rootConfiguration: RootConfiguration,
+  gitRunner: WorktreeGitRunner
+): Promise<boolean> {
+  if (!(await gitRecognizesWorktree(sourceRepositoryPath, worktreePath, rootConfiguration, gitRunner))) {
+    return false;
+  }
+  try {
+    const removed = await gitRunner.run(sourceRepositoryPath, ["worktree", "remove", "--force", worktreePath]);
+    return removed.kind === "completed" && removed.exitCode === 0 && !(await exists(worktreePath));
+  } catch {
+    return false;
+  }
+}
+
 async function hasCanonicalUnsymlinkedPath(path: string): Promise<boolean> {
   if (!isAbsolute(path) || resolve(path) !== path) {
     return false;
@@ -373,26 +398,12 @@ async function exists(path: string): Promise<boolean> {
   return Boolean(await lstat(path).catch(() => undefined));
 }
 
-interface DestinationIdentity {
-  /** An observed identity guard; it does not prove filesystem ownership. */
-  destinationDevice: number;
-  destinationInode: number;
-}
-
-async function hasExpectedDestinationIdentity(
+async function isCanonicalDestinationPath(
   rootPath: string,
-  worktreePath: string,
-  identity?: DestinationIdentity
+  worktreePath: string
 ): Promise<boolean> {
   const entry = await lstat(worktreePath).catch(() => undefined);
-  return Boolean(
-    entry &&
-    await isCanonicalDestination(rootPath, worktreePath, entry) &&
-    (!identity || (
-      entry.dev === identity.destinationDevice &&
-      entry.ino === identity.destinationInode
-    ))
-  );
+  return Boolean(entry && await isCanonicalDestination(rootPath, worktreePath, entry));
 }
 
 async function isCanonicalDestination(
@@ -406,73 +417,109 @@ async function isCanonicalDestination(
     await realpath(worktreePath).catch(() => undefined) === worktreePath;
 }
 
-async function reserveWorktreeDestination(
+function generatedWorktreePath(
   rootPath: string,
-  worktreePath: string,
-  afterMkdir?: () => void | Promise<void>
-): Promise<DestinationIdentity | undefined> {
+  investigationId: string,
+  generateSuffix?: () => string
+): string | undefined {
   try {
-    await mkdir(worktreePath);
+    const suffix = generateSuffix?.() ?? randomUUID();
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(suffix)) {
+      return undefined;
+    }
+    const worktreePath = join(rootPath, `${investigationId}-${suffix}`);
+    return parse(worktreePath).dir === rootPath &&
+      resolve(worktreePath) === worktreePath &&
+      isInside(rootPath, worktreePath)
+      ? worktreePath
+      : undefined;
   } catch {
     return undefined;
   }
-  await afterMkdir?.();
-  const entry = await lstat(worktreePath).catch(() => undefined);
-  return entry && await isCanonicalDestination(rootPath, worktreePath, entry)
-    ? { destinationDevice: entry.dev, destinationInode: entry.ino }
-    : undefined;
 }
 
-async function removeEmptyReservedDestination(
+async function isGeneratedWorktreePath(
   rootPath: string,
   worktreePath: string,
-  identity: DestinationIdentity
+  investigationId: string
 ): Promise<boolean> {
-  if (!(await hasExpectedDestinationIdentity(rootPath, worktreePath, identity))) {
-    return false;
-  }
-  try {
-    await rmdir(worktreePath);
-    return true;
-  } catch {
-    return false;
-  }
+  const prefix = `${investigationId}-`;
+  const name = worktreePath.slice(rootPath.length + 1);
+  return worktreePath.startsWith(`${rootPath}${sep}`) &&
+    name.startsWith(prefix) &&
+    name.length > prefix.length &&
+    parse(worktreePath).dir === rootPath &&
+    resolve(worktreePath) === worktreePath &&
+    isInside(rootPath, worktreePath) &&
+    /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(name.slice(prefix.length)) &&
+    await hasCanonicalUnsymlinkedPath(worktreePath);
 }
 
-async function writeMetadata(
+async function writeInitialMetadata(
   path: string,
   metadata: OwnershipMetadata,
-  exclusive: boolean,
-  beforeWrite?: () => void | Promise<void>
+  afterOpen?: () => void | Promise<void>,
+  beforePublish?: () => void | Promise<void>
 ): Promise<boolean> {
-  const serialized = JSON.stringify(metadata);
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let temporaryCreated = false;
   try {
-    if (!exclusive) {
-      if (!(await isSafeMetadataFile(path))) {
-        return false;
-      }
-      const existing = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-      const entry = await existing.stat();
-      await existing.close();
-      if (!entry.isFile()) {
-        return false;
-      }
-    }
-    await beforeWrite?.();
-    const handle = await open(
-      exclusive ? path : temporaryPath,
+    handle = await open(
+      temporaryPath,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
       0o600
     );
-    await handle.writeFile(serialized, "utf8");
+    temporaryCreated = true;
+    await afterOpen?.();
+    await handle.writeFile(JSON.stringify(metadata), "utf8");
     await handle.close();
-    if (!exclusive) {
-      await rename(temporaryPath, path);
-    }
+    handle = undefined;
+    await beforePublish?.();
+    await link(temporaryPath, path);
+    await unlink(temporaryPath).catch(() => undefined);
     return true;
   } catch {
-    await unlink(temporaryPath).catch(() => undefined);
+    await handle?.close().catch(() => undefined);
+    if (temporaryCreated) {
+      await unlink(temporaryPath).catch(() => undefined);
+    }
+    return false;
+  }
+}
+
+async function updateMetadata(
+  path: string,
+  provisional: OwnershipMetadata,
+  completed: OwnershipMetadata,
+  beforeWrite?: () => void | Promise<void>
+): Promise<boolean> {
+  const current = await readMetadata(path);
+  if (current.kind !== "valid" || !matchesMetadata(current.metadata, provisional)) {
+    return false;
+  }
+
+  const temporaryPath = `${path}.${randomUUID()}.tmp`;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let temporaryCreated = false;
+  try {
+    await beforeWrite?.();
+    handle = await open(
+      temporaryPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600
+    );
+    temporaryCreated = true;
+    await handle.writeFile(JSON.stringify(completed), "utf8");
+    await handle.close();
+    handle = undefined;
+    await rename(temporaryPath, path);
+    return true;
+  } catch {
+    await handle?.close().catch(() => undefined);
+    if (temporaryCreated) {
+      await unlink(temporaryPath).catch(() => undefined);
+    }
     return false;
   }
 }
@@ -511,9 +558,7 @@ async function readMetadata(path: string): Promise<MetadataReadResult> {
       typeof candidate.investigationId !== "string" ||
       typeof candidate.sourceRepositoryPath !== "string" ||
       typeof candidate.worktreePath !== "string" ||
-      typeof candidate.creationComplete !== "boolean" ||
-      typeof candidate.destinationDevice !== "number" ||
-      typeof candidate.destinationInode !== "number"
+      typeof candidate.creationComplete !== "boolean"
     ) {
       return { kind: "invalid" };
     }
@@ -521,10 +566,6 @@ async function readMetadata(path: string): Promise<MetadataReadResult> {
   } catch (error: unknown) {
     return isMissingFileError(error) ? { kind: "absent" } : { kind: "invalid" };
   }
-}
-
-async function isSafeMetadataFile(path: string): Promise<boolean> {
-  return (await metadataFileState(path)) === "safe";
 }
 
 async function metadataFileState(path: string): Promise<"absent" | "invalid" | "safe"> {
@@ -548,10 +589,17 @@ async function removeMetadata(path: string): Promise<boolean> {
   if (!entry) {
     return true;
   }
-  if (!entry.isSymbolicLink() && !entry.isFile()) {
+  if (entry.isSymbolicLink() || !entry.isFile() || await realpath(path).catch(() => undefined) !== path) {
     return false;
   }
   return unlink(path).then(() => true).catch(() => false);
+}
+
+function matchesMetadata(current: OwnershipMetadata, expected: OwnershipMetadata): boolean {
+  return current.investigationId === expected.investigationId &&
+    current.sourceRepositoryPath === expected.sourceRepositoryPath &&
+    current.worktreePath === expected.worktreePath &&
+    current.creationComplete === expected.creationComplete;
 }
 
 function preparationFailure(code: WorktreeFailureCode): WorktreePreparationResult {

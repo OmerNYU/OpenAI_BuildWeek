@@ -117,7 +117,7 @@ describe("LocalRepositoryWorkspace", () => {
     expect(operations.cleanupIsolatedWorktree).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps an unrecognized failed Git-add rollback private", async () => {
+  it("performs exactly one authorized outer cleanup attempt and keeps its failure private", async () => {
     const operations = createOperations({
       attempt: failedAttempt("creation_failed", true),
       cleanup: { status: "failed", failure: { code: "cleanup_failed" } }
@@ -130,6 +130,7 @@ describe("LocalRepositoryWorkspace", () => {
     expect(JSON.stringify(result)).not.toContain("creation_failed");
     expect(JSON.stringify(result)).not.toContain("cleanup_failed");
     expect(operations.cleanupIsolatedWorktree).toHaveBeenCalledTimes(1);
+    expect(operations.cleanupIsolatedWorktree).toHaveBeenCalledWith("investigation-31");
   });
 
   it("maps cleanup results to the sanitized orchestration result", async () => {
