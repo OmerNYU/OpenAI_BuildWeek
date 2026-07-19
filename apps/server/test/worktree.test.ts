@@ -9,6 +9,7 @@ import {
   prepareIsolatedWorktree,
   type WorktreeGitRunner
 } from "../src/repository/index.js";
+import { prepareIsolatedWorktreeAttempt } from "../src/repository/worktree/index.js";
 
 const run = promisify(execFile);
 const directories: string[] = [];
@@ -72,6 +73,39 @@ describe("isolated worktrees", () => {
       testRootPath: `${rootPath}/../${basename(rootPath)}`
     })).resolves.toEqual({ status: "failed", failure: { code: "invalid_destination" } });
     await expect(readdir(victimPath)).resolves.toEqual([]);
+  });
+
+  it("authorizes rollback only after this invocation creates ownership metadata", async () => {
+    const sourceRepositoryPath = await createRepository();
+    const rootPath = await createDirectory();
+    const existingDestination = join(rootPath, "existing-destination");
+    await mkdir(existingDestination);
+    await expect(prepareIsolatedWorktreeAttempt(sourceRepositoryPath, "existing-destination", {
+      testRootPath: rootPath
+    })).resolves.toEqual({
+      status: "failed",
+      failure: "invalid_destination",
+      cleanupAuthorized: false
+    });
+
+    await writeFile(join(rootPath, "existing-record.json"), "{}", "utf8");
+    await expect(prepareIsolatedWorktreeAttempt(sourceRepositoryPath, "existing-record", {
+      testRootPath: rootPath
+    })).resolves.toEqual({
+      status: "failed",
+      failure: "invalid_destination",
+      cleanupAuthorized: false
+    });
+
+    const beforeMetadataRunner: WorktreeGitRunner = { run: async () => ({ kind: "timeout" }) };
+    await expect(prepareIsolatedWorktreeAttempt(sourceRepositoryPath, "before-metadata", {
+      testRootPath: rootPath,
+      gitRunner: beforeMetadataRunner
+    })).resolves.toEqual({
+      status: "failed",
+      failure: "creation_failed",
+      cleanupAuthorized: false
+    });
   });
 
   it("uses the approved Windows application root and fails closed without LOCALAPPDATA", async () => {
@@ -147,18 +181,37 @@ describe("isolated worktrees", () => {
         return { kind: "completed", exitCode: 1, output: "" };
       }
     };
-    await expect(prepareIsolatedWorktree(sourceRepositoryPath, "partial", { testRootPath: rootPath, gitRunner: partialRunner })).resolves.toEqual({
-      status: "failed", failure: { code: "creation_failed" }
+    await expect(prepareIsolatedWorktreeAttempt(sourceRepositoryPath, "partial", {
+      testRootPath: rootPath,
+      gitRunner: partialRunner
+    })).resolves.toEqual({
+      status: "failed", failure: "creation_failed", cleanupAuthorized: true
     });
     await expect(cleanupIsolatedWorktree("partial", { testRootPath: rootPath })).resolves.toEqual({ status: "cleaned" });
+
+    const throwingRunner: WorktreeGitRunner = {
+      run: async (_cwd, args) => {
+        if (args[0] === "rev-parse") {
+          return { kind: "completed", exitCode: 0, output: `${canonicalSourcePath}\n` };
+        }
+        throw new Error("worktree add failed unexpectedly");
+      }
+    };
+    await expect(prepareIsolatedWorktreeAttempt(sourceRepositoryPath, "thrown-add", {
+      testRootPath: rootPath,
+      gitRunner: throwingRunner
+    })).resolves.toEqual({
+      status: "failed", failure: "creation_failed", cleanupAuthorized: true
+    });
+    await expect(cleanupIsolatedWorktree("thrown-add", { testRootPath: rootPath })).resolves.toEqual({ status: "cleaned" });
   });
 
   it("recovers after a deterministic metadata-update failure and refuses unowned cleanup", async () => {
     const sourceRepositoryPath = await createRepository();
     const rootPath = await createDirectory();
     const options = { testRootPath: rootPath, testHooks: { beforeMetadataUpdate: () => { throw new Error("injected failure"); } } };
-    await expect(prepareIsolatedWorktree(sourceRepositoryPath, "marker-failure", options)).resolves.toEqual({
-      status: "failed", failure: { code: "metadata_failed" }
+    await expect(prepareIsolatedWorktreeAttempt(sourceRepositoryPath, "marker-failure", options)).resolves.toEqual({
+      status: "failed", failure: "metadata_failed", cleanupAuthorized: true
     });
     await expect(readFile(join(rootPath, "marker-failure.json"), "utf8")).resolves.toContain('"creationComplete":false');
     await expect(cleanupIsolatedWorktree("marker-failure", { testRootPath: rootPath })).resolves.toEqual({ status: "cleaned" });

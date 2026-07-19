@@ -55,24 +55,44 @@ export async function prepareIsolatedWorktree(
   investigationId: string,
   options: WorktreeOptions = {}
 ): Promise<WorktreePreparationResult> {
+  const attempt = await prepareIsolatedWorktreeAttempt(
+    sourceRepositoryPath,
+    investigationId,
+    options
+  );
+  return attempt.status === "prepared"
+    ? {
+        status: "prepared",
+        investigationId,
+        sourceRepositoryPath: attempt.sourceRepositoryPath,
+        worktreePath: attempt.worktreePath
+      }
+    : preparationFailure(attempt.failure);
+}
+
+export async function prepareIsolatedWorktreeAttempt(
+  sourceRepositoryPath: string,
+  investigationId: string,
+  options: WorktreeOptions = {}
+): Promise<WorktreePreparationAttempt> {
   const rootConfiguration = await configuredRoot(options);
   const rootPath = await ownedRoot(rootConfiguration, true);
   const sourcePath = await canonicalDirectory(sourceRepositoryPath);
   if (!rootPath || !isSafeInvestigationId(investigationId)) {
-    return preparationFailure("invalid_destination");
+    return attemptFailure("invalid_destination");
   }
   if (!sourcePath) {
-    return preparationFailure("creation_failed");
+    return attemptFailure("creation_failed");
   }
 
   const worktreePath = join(rootPath, investigationId);
   if (!isInside(rootPath, worktreePath) || await exists(worktreePath)) {
-    return preparationFailure("invalid_destination");
+    return attemptFailure("invalid_destination");
   }
 
   const metadataPath = join(rootPath, `${investigationId}.json`);
   if (!isInside(rootPath, metadataPath) || await exists(metadataPath)) {
-    return preparationFailure("invalid_destination");
+    return attemptFailure("invalid_destination");
   }
 
   const gitRunner = options.gitRunner ?? systemGitRunner;
@@ -82,7 +102,7 @@ export async function prepareIsolatedWorktree(
     sourceRoot.exitCode !== 0 ||
     await canonicalGitDirectory(sourceRoot.output, rootConfiguration?.platform) !== sourcePath
   ) {
-    return preparationFailure("creation_failed");
+    return attemptFailure("creation_failed");
   }
 
   const metadata: OwnershipMetadata = {
@@ -92,20 +112,25 @@ export async function prepareIsolatedWorktree(
     creationComplete: false
   };
   if (!(await writeMetadata(metadataPath, metadata, true))) {
-    return preparationFailure("metadata_failed");
+    return attemptFailure("metadata_failed");
   }
 
-  const created = await gitRunner.run(sourcePath, ["worktree", "add", "--detach", worktreePath, "HEAD"]);
+  let created: WorktreeGitResult;
+  try {
+    created = await gitRunner.run(sourcePath, ["worktree", "add", "--detach", worktreePath, "HEAD"]);
+  } catch {
+    return attemptFailure("creation_failed", true);
+  }
   if (created.kind !== "completed" || created.exitCode !== 0) {
-    return preparationFailure("creation_failed");
+    return attemptFailure("creation_failed", true);
   }
 
   metadata.creationComplete = true;
   if (!(await writeMetadata(metadataPath, metadata, false, options.testHooks?.beforeMetadataUpdate))) {
-    return preparationFailure("metadata_failed");
+    return attemptFailure("metadata_failed", true);
   }
 
-  return { status: "prepared", investigationId, sourceRepositoryPath: sourcePath, worktreePath };
+  return { status: "prepared", sourceRepositoryPath: sourcePath, worktreePath };
 }
 
 export async function cleanupIsolatedWorktree(
@@ -469,6 +494,25 @@ async function removeMetadata(path: string): Promise<boolean> {
 
 function preparationFailure(code: WorktreeFailureCode): WorktreePreparationResult {
   return { status: "failed", failure: { code } };
+}
+
+type WorktreePreparationAttempt =
+  | {
+      status: "prepared";
+      sourceRepositoryPath: string;
+      worktreePath: string;
+    }
+  | {
+      status: "failed";
+      failure: WorktreeFailureCode;
+      cleanupAuthorized: boolean;
+    };
+
+function attemptFailure(
+  failure: WorktreeFailureCode,
+  cleanupAuthorized = false
+): WorktreePreparationAttempt {
+  return { status: "failed", failure, cleanupAuthorized };
 }
 
 function cleanupFailure(): WorktreeCleanupResult {

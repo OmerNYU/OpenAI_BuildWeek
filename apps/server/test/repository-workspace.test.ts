@@ -27,7 +27,7 @@ describe("LocalRepositoryWorkspace", () => {
     const workspace = new LocalRepositoryWorkspace(operations);
 
     await expect(workspace.prepare("C:/source", "investigation-31")).resolves.toEqual(preparationFailure());
-    expect(operations.prepareIsolatedWorktree).not.toHaveBeenCalled();
+    expect(operations.prepareIsolatedWorktreeAttempt).not.toHaveBeenCalled();
     expect(operations.cleanupIsolatedWorktree).not.toHaveBeenCalled();
   });
 
@@ -49,16 +49,56 @@ describe("LocalRepositoryWorkspace", () => {
       status: "prepared",
       workspace: { sourceRepositoryPath: canonicalSourcePath, workspacePath: worktreePath }
     });
-    expect(operations.prepareIsolatedWorktree).toHaveBeenCalledWith(
+    expect(operations.prepareIsolatedWorktreeAttempt).toHaveBeenCalledWith(
       canonicalSourcePath,
       "investigation-31"
     );
     expect(operations.cleanupIsolatedWorktree).not.toHaveBeenCalled();
   });
 
-  it("rolls back a failed worktree preparation once and returns a sanitized failure", async () => {
+  it("does not roll back an invalid destination", async () => {
     const operations = createOperations({
-      preparation: { status: "failed", failure: { code: "metadata_failed" } }
+      attempt: failedAttempt("invalid_destination", false)
+    });
+    const workspace = new LocalRepositoryWorkspace(operations);
+
+    await expect(workspace.prepare("C:/source", "investigation-31")).resolves.toEqual(preparationFailure());
+    expect(operations.cleanupIsolatedWorktree).not.toHaveBeenCalled();
+  });
+
+  it("does not roll back a pre-existing worktree destination", async () => {
+    const operations = createOperations({
+      attempt: failedAttempt("invalid_destination", false)
+    });
+    const workspace = new LocalRepositoryWorkspace(operations);
+
+    await expect(workspace.prepare("C:/source", "investigation-31")).resolves.toEqual(preparationFailure());
+    expect(operations.cleanupIsolatedWorktree).not.toHaveBeenCalled();
+  });
+
+  it("does not roll back a pre-existing ownership record", async () => {
+    const operations = createOperations({
+      attempt: failedAttempt("invalid_destination", false)
+    });
+    const workspace = new LocalRepositoryWorkspace(operations);
+
+    await expect(workspace.prepare("C:/source", "investigation-31")).resolves.toEqual(preparationFailure());
+    expect(operations.cleanupIsolatedWorktree).not.toHaveBeenCalled();
+  });
+
+  it("does not roll back a failure before initial ownership metadata exists", async () => {
+    const operations = createOperations({
+      attempt: failedAttempt("creation_failed", false)
+    });
+    const workspace = new LocalRepositoryWorkspace(operations);
+
+    await expect(workspace.prepare("C:/source", "investigation-31")).resolves.toEqual(preparationFailure());
+    expect(operations.cleanupIsolatedWorktree).not.toHaveBeenCalled();
+  });
+
+  it("rolls back once after Git creation fails following metadata creation", async () => {
+    const operations = createOperations({
+      attempt: failedAttempt("creation_failed", true)
     });
     const workspace = new LocalRepositoryWorkspace(operations);
 
@@ -67,9 +107,19 @@ describe("LocalRepositoryWorkspace", () => {
     expect(operations.cleanupIsolatedWorktree).toHaveBeenCalledWith("investigation-31");
   });
 
-  it("keeps worktree and rollback failures private", async () => {
+  it("rolls back once after the final metadata update fails", async () => {
     const operations = createOperations({
-      preparation: { status: "failed", failure: { code: "creation_failed" } },
+      attempt: failedAttempt("metadata_failed", true)
+    });
+    const workspace = new LocalRepositoryWorkspace(operations);
+
+    await expect(workspace.prepare("C:/source", "investigation-31")).resolves.toEqual(preparationFailure());
+    expect(operations.cleanupIsolatedWorktree).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps authorized rollback failures private", async () => {
+    const operations = createOperations({
+      attempt: failedAttempt("metadata_failed", true),
       cleanup: { status: "failed", failure: { code: "cleanup_failed" } }
     });
     const workspace = new LocalRepositoryWorkspace(operations);
@@ -77,7 +127,7 @@ describe("LocalRepositoryWorkspace", () => {
     const result = await workspace.prepare("C:/source", "investigation-31");
 
     expect(result).toEqual(preparationFailure());
-    expect(JSON.stringify(result)).not.toContain("creation_failed");
+    expect(JSON.stringify(result)).not.toContain("metadata_failed");
     expect(JSON.stringify(result)).not.toContain("cleanup_failed");
     expect(operations.cleanupIsolatedWorktree).toHaveBeenCalledTimes(1);
   });
@@ -98,7 +148,7 @@ describe("LocalRepositoryWorkspace", () => {
 
 function createOperations(options: {
   preflight?: Awaited<ReturnType<typeof import("../src/repository/index.js").preflightRepository>>;
-  preparation?: Awaited<ReturnType<typeof import("../src/repository/index.js").prepareIsolatedWorktree>>;
+  attempt?: Awaited<ReturnType<typeof import("../src/repository/worktree/index.js").prepareIsolatedWorktreeAttempt>>;
   cleanup?: Awaited<ReturnType<typeof import("../src/repository/index.js").cleanupIsolatedWorktree>>;
 } = {}) {
   return {
@@ -106,14 +156,20 @@ function createOperations(options: {
       status: "ready" as const,
       repositoryPath: "C:/canonical/source"
     })),
-    prepareIsolatedWorktree: vi.fn(async () => options.preparation ?? ({
+    prepareIsolatedWorktreeAttempt: vi.fn(async () => options.attempt ?? ({
       status: "prepared" as const,
-      investigationId: "investigation-31",
       sourceRepositoryPath: "C:/canonical/source",
       worktreePath: "C:/FailSpec/worktrees/investigation-31"
     })),
     cleanupIsolatedWorktree: vi.fn(async () => options.cleanup ?? ({ status: "cleaned" as const }))
   };
+}
+
+function failedAttempt(
+  failure: "invalid_destination" | "creation_failed" | "metadata_failed",
+  cleanupAuthorized: boolean
+) {
+  return { status: "failed" as const, failure, cleanupAuthorized };
 }
 
 function preparationFailure() {
