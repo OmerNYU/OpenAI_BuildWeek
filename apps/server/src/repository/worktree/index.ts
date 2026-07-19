@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, rename, rm, stat, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rename, stat, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import type { WorktreeFailureCode, WorktreePreparationResult } from "@failspec/contracts";
@@ -35,7 +35,6 @@ export interface WorktreeOptions {
     platform?: NodeJS.Platform;
     environment?: NodeJS.ProcessEnv;
     beforeMetadataUpdate?: () => void | Promise<void>;
-    beforePartialCleanup?: () => void | Promise<void>;
   };
 }
 
@@ -187,18 +186,6 @@ export async function cleanupIsolatedWorktree(
       return cleanupFailure();
     }
     if (await exists(worktreePath)) {
-      return cleanupFailure();
-    }
-  } else if (!metadata.creationComplete) {
-    await options.testHooks?.beforePartialCleanup?.();
-    const currentMetadata = await readMetadata(metadataPath);
-    if (
-      currentMetadata.kind !== "valid" ||
-      !matchesMetadata(currentMetadata.metadata, metadata)
-    ) {
-      return cleanupFailure();
-    }
-    if (!(await removeOwnedDestination(rootPath, worktreePath))) {
       return cleanupFailure();
     }
   } else {
@@ -364,14 +351,6 @@ async function isOwnedDestination(rootPath: string, worktreePath: string): Promi
   return Boolean(entry?.isDirectory() && !entry.isSymbolicLink() && isInside(rootPath, worktreePath));
 }
 
-async function removeOwnedDestination(rootPath: string, worktreePath: string): Promise<boolean> {
-  if (!(await isOwnedDestination(rootPath, worktreePath))) {
-    return false;
-  }
-  await rm(worktreePath, { recursive: true, force: false }).catch(() => undefined);
-  return !(await exists(worktreePath));
-}
-
 async function writeMetadata(
   path: string,
   metadata: OwnershipMetadata,
@@ -468,13 +447,6 @@ async function metadataFileState(path: string): Promise<"absent" | "invalid" | "
   } catch (error: unknown) {
     return isMissingFileError(error) ? "absent" : "invalid";
   }
-}
-
-function matchesMetadata(current: OwnershipMetadata, expected: OwnershipMetadata): boolean {
-  return current.investigationId === expected.investigationId &&
-    current.sourceRepositoryPath === expected.sourceRepositoryPath &&
-    current.worktreePath === expected.worktreePath &&
-    current.creationComplete === expected.creationComplete;
 }
 
 function isMissingFileError(error: unknown): boolean {

@@ -188,6 +188,7 @@ describe("isolated worktrees", () => {
       status: "failed", failure: "creation_failed", cleanupAuthorized: true
     });
     await expect(cleanupIsolatedWorktree("partial", { testRootPath: rootPath })).resolves.toEqual({ status: "cleaned" });
+    await expect(readFile(join(rootPath, "partial.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 
     const throwingRunner: WorktreeGitRunner = {
       run: async (_cwd, args) => {
@@ -215,6 +216,7 @@ describe("isolated worktrees", () => {
     });
     await expect(readFile(join(rootPath, "marker-failure.json"), "utf8")).resolves.toContain('"creationComplete":false');
     await expect(cleanupIsolatedWorktree("marker-failure", { testRootPath: rootPath })).resolves.toEqual({ status: "cleaned" });
+    await expect(readFile(join(rootPath, "marker-failure.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 
     await mkdir(join(rootPath, "unowned"));
     await expect(cleanupIsolatedWorktree("unowned", { testRootPath: rootPath })).resolves.toEqual({
@@ -253,27 +255,41 @@ describe("isolated worktrees", () => {
     await expect(readdir(worktreePath)).resolves.toEqual(expect.any(Array));
   });
 
-  it("revalidates metadata before partial recursive deletion", async () => {
+  it("does not remove an unrecognized destination after a failed worktree add", async () => {
     const sourceRepositoryPath = await createRepository();
     const rootPath = await createDirectory();
     const canonicalSourcePath = await realpath(sourceRepositoryPath);
-    const partialRunner: WorktreeGitRunner = {
+    const investigationId = "unrecognized-destination";
+    const sentinelPath = join(rootPath, investigationId, "sentinel.txt");
+    const runner: WorktreeGitRunner = {
       run: async (cwd, args) => {
         if (args[0] === "rev-parse") {
           return { kind: "completed", exitCode: 0, output: canonicalSourcePath };
         }
-        await run("git", ["-C", cwd, ...args]);
-        await run("git", ["-C", cwd, "worktree", "remove", "--force", args[3] ?? ""]);
-        await mkdir(args[3] ?? "");
-        return { kind: "completed", exitCode: 1, output: "" };
+        if (args[0] === "worktree" && args[1] === "add") {
+          await mkdir(args[3] ?? "");
+          await writeFile(sentinelPath, "do not remove", "utf8");
+          return { kind: "completed", exitCode: 1, output: "" };
+        }
+        if (args[0] === "worktree" && args[1] === "list") {
+          return { kind: "completed", exitCode: 0, output: "" };
+        }
+        return { kind: "failed" };
       }
     };
-    await prepareIsolatedWorktree(sourceRepositoryPath, "tampered-partial", { testRootPath: rootPath, gitRunner: partialRunner });
-    await expect(cleanupIsolatedWorktree("tampered-partial", {
+    await expect(prepareIsolatedWorktreeAttempt(sourceRepositoryPath, investigationId, {
       testRootPath: rootPath,
-      testHooks: { beforePartialCleanup: () => writeFile(join(rootPath, "tampered-partial.json"), "{}", "utf8") }
+      gitRunner: runner
+    })).resolves.toEqual({
+      status: "failed", failure: "creation_failed", cleanupAuthorized: true
+    });
+
+    await expect(cleanupIsolatedWorktree(investigationId, {
+      testRootPath: rootPath,
+      gitRunner: runner
     })).resolves.toEqual({ status: "failed", failure: { code: "cleanup_failed" } });
-    await expect(readdir(join(rootPath, "tampered-partial"))).resolves.toEqual(expect.any(Array));
+    await expect(readFile(sentinelPath, "utf8")).resolves.toBe("do not remove");
+    await expect(readFile(join(rootPath, `${investigationId}.json`), "utf8")).resolves.toContain('"creationComplete":false');
   });
 
   it("rejects unsafe metadata states and cleans valid metadata whose destination is already gone", async () => {
