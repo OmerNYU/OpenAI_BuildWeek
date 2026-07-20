@@ -14,6 +14,7 @@ import {
   buildStartCommand,
   buildTestCommand,
   createCommandPolicy,
+  createRunnerCommandPolicy,
   initializeDependencyInstallLog,
   planDependencyInstall,
   preflightRepository,
@@ -51,7 +52,7 @@ describe("repository preflight", () => {
     expect(vitePolicy.framework).toBe("vite");
     expect(buildStartCommand(vitePolicy, 3102)).toEqual({
       command: "npm",
-      args: ["run", "dev", "--", "--host", "127.0.0.1", "--port", "3102"]
+      args: ["run", "dev", "--", "--host", "127.0.0.1", "--port", "3102", "--strictPort"]
     });
   });
 
@@ -61,6 +62,19 @@ describe("repository preflight", () => {
     });
 
     await expect(preflightRepository(repository)).resolves.toMatchObject({ status: "ready" });
+  });
+
+  it("revalidates the approved command policy after the fixed generated test makes a worktree dirty", async () => {
+    const repository = await createRepository({ framework: "vite" });
+    await mkdir(join(repository, "tests", "generated"), { recursive: true });
+    await writeFile(join(repository, "tests", "generated", "failspec.generated.spec.ts"), "staged", "utf8");
+
+    await expect(createCommandPolicy(repository)).resolves.toMatchObject({
+      status: "unsupported", failure: { code: "dirty_repository" }
+    });
+    await expect(createRunnerCommandPolicy(repository)).resolves.toMatchObject({
+      status: "ready", policy: { framework: "vite", testScript: "test:generated" }
+    });
   });
 
   it("rejects unsafe, non-Git, dirty, unsupported-package-manager, and unsupported-framework repositories", async () => {
@@ -156,7 +170,7 @@ describe("repository preflight", () => {
       next: { requiredDependencies: ["next", "react", "react-dom"], devScript: "next dev" },
       vite: { requiredDependencies: ["react", "react-dom", "vite"], devScript: "vite" }
     });
-    expect(approvedGeneratedTestScript).toBe("playwright test tests/generated");
+    expect(approvedGeneratedTestScript).toBe("playwright test tests/generated/failspec.generated.spec.ts");
   });
 
   it("bounds Git inspection, canonicalizes Git roots, and classifies first status output", async () => {

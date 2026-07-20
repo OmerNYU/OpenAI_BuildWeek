@@ -49,7 +49,7 @@ npm run dev:server
 
 Mock mode uses pass-through repository preparation: it performs no Git commands or preflight checks and uses the submitted repository path directly. Local mode runs repository preflight and consumes the existing deterministic isolated-worktree boundary. Codex analysis, test generation, and the mocked runner boundary receive the prepared workspace path; cleanup uses that same existing boundary. The submitted repository path remains persisted with the investigation.
 
-Runner execution and verdict classification remain mocked; generated-test staging and real Playwright execution are not implemented.
+Generated-test staging and controlled Playwright execution are implemented as Person 3 boundaries, but orchestration still injects the deterministic mock runner until the separate integration work lands. Verdict classification remains mocked.
 
 ## Investigation API
 
@@ -84,4 +84,4 @@ npm run build
 
 ## Current scaffold limitations
 
-The frontend supports bug-report submission, investigation progress, polling through the existing API, and terminal summaries. The real Codex adapter is integrated behind `FAILSPEC_CODEX_MODE=local` and performs repository preflight plus analysis and test generation in an isolated worktree. Cleanup is in-process only and uses the existing worktree boundary; cleanup failure prevents successful verification. Generated-test staging, real Playwright execution, execution-evidence collection, and evidence-based verdict classification remain incomplete; runner execution and the final verdict remain mocked.
+The frontend supports bug-report submission, investigation progress, polling through the existing API, and terminal summaries. The real Codex adapter is integrated behind `FAILSPEC_CODEX_MODE=local` and performs repository preflight plus analysis and test generation in an isolated worktree. Cleanup is in-process only and uses the existing worktree boundary; cleanup failure prevents successful verification. Generated-test staging, controlled Playwright execution, and execution-evidence collection are implemented boundaries, but orchestration still uses its deterministic mock runner and verdict classifier until the separate integration work lands.

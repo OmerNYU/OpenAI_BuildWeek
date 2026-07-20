@@ -5,7 +5,7 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import type { RepositoryPreflightResult } from "@failspec/contracts";
 
 export const approvedScriptNames = ["dev", "test:generated"] as const;
-export const approvedGeneratedTestScript = "playwright test tests/generated";
+export const approvedGeneratedTestScript = "playwright test tests/generated/failspec.generated.spec.ts";
 export const supportedFrameworkPolicies = {
   next: { requiredDependencies: ["next", "react", "react-dom"], devScript: "next dev" },
   vite: { requiredDependencies: ["react", "react-dom", "vite"], devScript: "vite" }
@@ -168,6 +168,50 @@ export async function createCommandPolicy(
   };
 }
 
+/**
+ * Revalidates the command surface after FailSpec has staged its fixed test.
+ * The isolated worktree is intentionally dirty at this point, so this omits
+ * only the source-repository clean-Git check performed by preflightRepository.
+ */
+export async function createRunnerCommandPolicy(
+  worktreePath: string,
+  options: PreflightOptions = {}
+): Promise<RepositoryCommandPolicyResult> {
+  const repositoryPath = await canonicalDirectory(worktreePath);
+  if (!repositoryPath) {
+    return failed("unsafe_path");
+  }
+  const gitRoot = await (options.gitRunner ?? systemGitRunner).run(repositoryPath, ["rev-parse", "--show-toplevel"], {
+    timeoutMs: gitTimeoutMs,
+    maxOutputBytes: gitRevParseOutputLimit,
+    stopOnOutput: false
+  });
+  if (gitRoot.kind !== "completed") {
+    return failed("inspection_failed");
+  }
+  if (gitRoot.exitCode !== 0 || await canonicalGitDirectory(gitRoot.output) !== repositoryPath) {
+    return unsupported("not_git_repository");
+  }
+  const packageJson = await readPackageJson(repositoryPath);
+  const framework = packageJson && detectFramework(packageJson);
+  if (!packageJson || !framework) {
+    return failed("inspection_failed");
+  }
+  if (!(await isNpmRepository(packageJson, repositoryPath))) {
+    return unsupported("unsupported_package_manager");
+  }
+  if (!(await hasPlaywrightSetup(repositoryPath, packageJson))) {
+    return unsupported("playwright_not_configured");
+  }
+  if (!hasApprovedScripts(packageJson)) {
+    return unsupported("unsupported_script");
+  }
+  return {
+    status: "ready",
+    policy: { repositoryPath, framework, startScript: "dev", testScript: "test:generated" }
+  };
+}
+
 export function buildInstallCommand(): NpmCommand {
   return { command: "npm", args: ["ci"] };
 }
@@ -181,7 +225,7 @@ export function buildStartCommand(policy: RepositoryCommandPolicy, port: number)
   const hostFlag = policy.framework === "next" ? "--hostname" : "--host";
   return {
     command: "npm",
-    args: ["run", policy.startScript, "--", hostFlag, "127.0.0.1", "--port", String(port)]
+    args: ["run", policy.startScript, "--", hostFlag, "127.0.0.1", "--port", String(port), ...(policy.framework === "vite" ? ["--strictPort"] : [])]
   };
 }
 
