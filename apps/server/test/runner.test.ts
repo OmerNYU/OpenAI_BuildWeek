@@ -82,7 +82,12 @@ describe("generated-test staging", () => {
 
   it("rejects property and computed CommonJS loading", async () => {
     const worktree = await createWorktree();
-    for (const content of ["module.require('./helper');", "module['require']('./helper');", "module[`require`]('./helper');"]) {
+    for (const content of [
+      "module.require('./helper');",
+      "module['require']('./helper');",
+      "module[`require`]('./helper');",
+      "module[`req${\"uire\"}`]('./helper');"
+    ]) {
       await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
         status: "rejected", failure: { code: "disallowed_api" }
       });
@@ -98,7 +103,12 @@ describe("generated-test staging", () => {
 
   it("rejects indirect global eval access", async () => {
     const worktree = await createWorktree();
-    for (const content of ["globalThis['eval']('1');", "globalThis[`eval`]('1');", "globalThis[eval]('1');"]) {
+    for (const content of [
+      "globalThis['eval']('1');",
+      "globalThis[`eval`]('1');",
+      "globalThis[eval]('1');",
+      "globalThis[`ev${\"al\"}`]('1');"
+    ]) {
       await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
         status: "rejected", failure: { code: "disallowed_api" }
       });
@@ -107,7 +117,11 @@ describe("generated-test staging", () => {
 
   it("rejects indirect global Function access", async () => {
     const worktree = await createWorktree();
-    for (const content of ["globalThis['Function']('return 1')();", "globalThis[`Function`]('return 1')();"]) {
+    for (const content of [
+      "globalThis['Function']('return 1')();",
+      "globalThis[`Function`]('return 1')();",
+      "globalThis[`Fun${\"ction\"}`]('return 1')();"
+    ]) {
       await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
         status: "rejected", failure: { code: "disallowed_api" }
       });
@@ -135,6 +149,20 @@ describe("generated-test staging", () => {
       "page.goto(target);",
       "request.get(`https://example.com`);",
       "page.request.post('/api/' + endpoint);"
+    ]) {
+      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
+        status: "rejected", failure: { code: "disallowed_api" }
+      });
+    }
+  });
+
+  it("rejects computed Playwright navigation and request methods", async () => {
+    const worktree = await createWorktree();
+    for (const content of [
+      "page['goto']('https://' + 'example.com');",
+      "request[`get`]('https://' + 'example.com');",
+      "page[method]('/checkout');",
+      "request[method]('/api')"
     ]) {
       await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
         status: "rejected", failure: { code: "disallowed_api" }

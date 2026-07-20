@@ -111,9 +111,9 @@ function validateSource(sourceFile: ts.SourceFile): "import" | "api" | undefined
       result = "import";
       return;
     }
-    if (ts.isCallExpression(node) && isPlaywrightTargetCall(node)) {
+    if (ts.isCallExpression(node) && (isUnsafePlaywrightCall(node) || hasDynamicPlaywrightMember(node))) {
       const target = node.arguments[0] && staticString(node.arguments[0]);
-      if (!target || !isLocalTarget(target)) {
+      if (hasDynamicPlaywrightMember(node) || !target || !isLocalTarget(target)) {
         result = "api";
         return;
       }
@@ -133,7 +133,10 @@ function validateSource(sourceFile: ts.SourceFile): "import" | "api" | undefined
       }
     }
     if (
-      dangerousMemberNames.has(memberName(node) ?? "")
+      dangerousMemberNames.has(memberName(node) ?? "") ||
+      (ts.isElementAccessExpression(node) &&
+        memberName(node) === undefined &&
+        hasSensitiveRoot(node.expression))
     ) {
       result = "api";
       return;
@@ -154,17 +157,40 @@ function memberName(node: ts.Node): string | undefined {
   return undefined;
 }
 
-function isPlaywrightTargetCall(node: ts.CallExpression): boolean {
-  if (!ts.isPropertyAccessExpression(node.expression)) {
-    return false;
-  }
-  if (node.expression.name.text === "goto") {
+function isUnsafePlaywrightCall(node: ts.CallExpression): boolean {
+  const name = memberName(node.expression);
+  if (name === "goto") {
     return true;
   }
-  const receiver = node.expression.expression;
-  return requestMethodNames.has(node.expression.name.text) &&
-    ((ts.isIdentifier(receiver) && receiver.text === "request") ||
-      (ts.isPropertyAccessExpression(receiver) && receiver.name.text === "request"));
+  return name !== undefined && requestMethodNames.has(name) && isRequestReceiver(receiver(node.expression));
+}
+
+function hasDynamicPlaywrightMember(node: ts.CallExpression): boolean {
+  return ts.isElementAccessExpression(node.expression) &&
+    memberName(node.expression) === undefined &&
+    isPageOrRequestReceiver(node.expression.expression);
+}
+
+function receiver(node: ts.Node): ts.Expression | undefined {
+  return ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) ? node.expression : undefined;
+}
+
+function isRequestReceiver(node: ts.Expression | undefined): boolean {
+  return Boolean(node && ((ts.isIdentifier(node) && node.text === "request") ||
+    (ts.isPropertyAccessExpression(node) && node.name.text === "request")));
+}
+
+function isPageOrRequestReceiver(node: ts.Expression): boolean {
+  return (ts.isIdentifier(node) && (node.text === "page" || node.text === "request")) ||
+    (ts.isPropertyAccessExpression(node) && node.name.text === "request");
+}
+
+function hasSensitiveRoot(node: ts.Expression): boolean {
+  let current: ts.Expression = node;
+  while (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+    current = current.expression;
+  }
+  return ts.isIdentifier(current) && ["module", "process", "globalThis"].includes(current.text);
 }
 
 function staticString(node: ts.Expression): string | undefined {
