@@ -309,7 +309,7 @@ function isExactPlaywrightImport(statement: ts.Statement | undefined): statement
     return false;
   }
   return new Set(bindings.elements.map((specifier) => !specifier.propertyName ? specifier.name.text : "")).size === 2 &&
-    bindings.elements.every((specifier) => !specifier.propertyName && (specifier.name.text === "expect" || specifier.name.text === "test"));
+    bindings.elements.every((specifier) => !specifier.isTypeOnly && !specifier.propertyName && (specifier.name.text === "expect" || specifier.name.text === "test"));
 }
 
 async function ownedDirectory(parent: string, name: string): Promise<string | undefined> {

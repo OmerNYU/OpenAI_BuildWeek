@@ -85,7 +85,9 @@ describe("generated-test staging", () => {
     const worktree = await createWorktree();
     for (const content of [
       "import { chromium } from '@playwright/test';",
-      "import defaultBinding, { expect, test } from '@playwright/test';"
+      "import defaultBinding, { expect, test } from '@playwright/test';",
+      "import { type expect, test } from '@playwright/test'; test('x', async ({ page }) => { await page.click('button'); await expect(true).toBe(true); });",
+      "import { expect, type test } from '@playwright/test'; test('x', async ({ page }) => { await page.click('button'); await expect(true).toBe(true); });"
     ]) {
       await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
         status: "rejected", failure: { code: "disallowed_import" }
