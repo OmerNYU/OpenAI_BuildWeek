@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { stageGeneratedTest, stagedGeneratedTestPath } from "../src/runner/index.js";
+import { stageGeneratedTest, stagedGeneratedTestPath } from "../src/runner/staging.js";
 
 const directories: string[] = [];
 const validTest = "import { expect, test } from '@playwright/test';\ntest('checkout', async ({ page }) => { await page.goto('/'); await page.click('button'); expect(true).toBe(true); });";
@@ -80,6 +80,15 @@ describe("generated-test staging", () => {
     });
   });
 
+  it("rejects property and computed CommonJS loading", async () => {
+    const worktree = await createWorktree();
+    for (const content of ["module.require('./helper');", "module['require']('./helper');", "module[`require`]('./helper');"]) {
+      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
+        status: "rejected", failure: { code: "disallowed_api" }
+      });
+    }
+  });
+
   it("rejects forbidden APIs", async () => {
     const worktree = await createWorktree();
     await expect(stageGeneratedTest(worktree, "eval('1');")).resolves.toMatchObject({
@@ -89,16 +98,20 @@ describe("generated-test staging", () => {
 
   it("rejects indirect global eval access", async () => {
     const worktree = await createWorktree();
-    await expect(stageGeneratedTest(worktree, "globalThis['eval']('1');")).resolves.toMatchObject({
-      status: "rejected", failure: { code: "disallowed_api" }
-    });
+    for (const content of ["globalThis['eval']('1');", "globalThis[`eval`]('1');", "globalThis[eval]('1');"]) {
+      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
+        status: "rejected", failure: { code: "disallowed_api" }
+      });
+    }
   });
 
   it("rejects indirect global Function access", async () => {
     const worktree = await createWorktree();
-    await expect(stageGeneratedTest(worktree, "globalThis['Function']('return 1')();")).resolves.toMatchObject({
-      status: "rejected", failure: { code: "disallowed_api" }
-    });
+    for (const content of ["globalThis['Function']('return 1')();", "globalThis[`Function`]('return 1')();"]) {
+      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
+        status: "rejected", failure: { code: "disallowed_api" }
+      });
+    }
   });
 
   it("rejects obvious external network use", async () => {
@@ -106,6 +119,27 @@ describe("generated-test staging", () => {
     await expect(stageGeneratedTest(worktree, "fetch('https://example.com');")).resolves.toMatchObject({
       status: "rejected", failure: { code: "disallowed_api" }
     });
+  });
+
+  it("allows only local static Playwright navigation and request targets", async () => {
+    const worktree = await createWorktree();
+    for (const content of ["page.goto('/checkout');", "page.goto('http://127.0.0.1:3100/');", "request.get('https://localhost/api');"]) {
+      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({ status: "staged" });
+    }
+  });
+
+  it("rejects external or dynamic Playwright navigation and request targets", async () => {
+    const worktree = await createWorktree();
+    for (const content of [
+      "page.goto('https://' + 'example.com');",
+      "page.goto(target);",
+      "request.get(`https://example.com`);",
+      "page.request.post('/api/' + endpoint);"
+    ]) {
+      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
+        status: "rejected", failure: { code: "disallowed_api" }
+      });
+    }
   });
   it.runIf(process.platform !== "win32")("rejects a symlinked tests directory", async () => {
     const worktree = await createWorktree();
@@ -126,6 +160,19 @@ describe("generated-test staging", () => {
       status: "failed", failure: { code: "write_failed" }
     });
     await expect(readFile(join(victim, "failspec.generated.spec.ts"), "utf8")).rejects.toThrow();
+  });
+
+  it.runIf(process.platform !== "win32")("does not overwrite a symlinked generated-test file", async () => {
+    const worktree = await createWorktree();
+    const victim = join(await createWorktree(), "victim.spec.ts");
+    await mkdir(join(worktree, "tests", "generated"), { recursive: true });
+    await writeFile(victim, "unchanged", "utf8");
+    await symlink(victim, join(worktree, stagedGeneratedTestPath));
+
+    await expect(stageGeneratedTest(worktree, validTest)).resolves.toMatchObject({
+      status: "failed", failure: { code: "write_failed" }
+    });
+    await expect(readFile(victim, "utf8")).resolves.toBe("unchanged");
   });
 });
 

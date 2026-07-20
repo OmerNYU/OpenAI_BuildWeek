@@ -32,7 +32,8 @@ const forbiddenModuleNames = new Set([
   "worker_threads",
   "node:worker_threads"
 ]);
-const dangerousMemberNames = new Set(["getBuiltinModule", "eval", "Function"]);
+const dangerousMemberNames = new Set(["getBuiltinModule", "require", "eval", "Function"]);
+const requestMethodNames = new Set(["fetch", "get", "post", "put", "patch", "delete", "head"]);
 
 export async function stageGeneratedTest(
   worktreePath: string,
@@ -110,6 +111,13 @@ function validateSource(sourceFile: ts.SourceFile): "import" | "api" | undefined
       result = "import";
       return;
     }
+    if (ts.isCallExpression(node) && isPlaywrightTargetCall(node)) {
+      const target = node.arguments[0] && staticString(node.arguments[0]);
+      if (!target || !isLocalTarget(target)) {
+        result = "api";
+        return;
+      }
+    }
     if (ts.isIdentifier(node) && forbiddenIdentifiers.has(node.text)) {
       result = "api";
       return;
@@ -125,10 +133,7 @@ function validateSource(sourceFile: ts.SourceFile): "import" | "api" | undefined
       }
     }
     if (
-      (ts.isPropertyAccessExpression(node) && dangerousMemberNames.has(node.name.text)) ||
-      (ts.isElementAccessExpression(node) &&
-        ts.isStringLiteral(node.argumentExpression) &&
-        dangerousMemberNames.has(node.argumentExpression.text))
+      dangerousMemberNames.has(memberName(node) ?? "")
     ) {
       result = "api";
       return;
@@ -137,6 +142,59 @@ function validateSource(sourceFile: ts.SourceFile): "import" | "api" | undefined
   };
   visit(sourceFile);
   return result;
+}
+
+function memberName(node: ts.Node): string | undefined {
+  if (ts.isPropertyAccessExpression(node)) {
+    return node.name.text;
+  }
+  if (ts.isElementAccessExpression(node)) {
+    return node.argumentExpression && stringValue(node.argumentExpression);
+  }
+  return undefined;
+}
+
+function isPlaywrightTargetCall(node: ts.CallExpression): boolean {
+  if (!ts.isPropertyAccessExpression(node.expression)) {
+    return false;
+  }
+  if (node.expression.name.text === "goto") {
+    return true;
+  }
+  const receiver = node.expression.expression;
+  return requestMethodNames.has(node.expression.name.text) &&
+    ((ts.isIdentifier(receiver) && receiver.text === "request") ||
+      (ts.isPropertyAccessExpression(receiver) && receiver.name.text === "request"));
+}
+
+function staticString(node: ts.Expression): string | undefined {
+  const literal = stringValue(node);
+  if (literal !== undefined) {
+    return literal;
+  }
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = staticString(node.left);
+    const right = staticString(node.right);
+    return left === undefined || right === undefined ? undefined : left + right;
+  }
+  return undefined;
+}
+
+function stringValue(node: ts.Node): string | undefined {
+  return ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text : undefined;
+}
+
+function isLocalTarget(target: string): boolean {
+  if (target.startsWith("/") || target.startsWith("./") || target.startsWith("../") || target.startsWith("?") || target.startsWith("#")) {
+    return true;
+  }
+  try {
+    const url = new URL(target);
+    return (url.protocol === "http:" || url.protocol === "https:") &&
+      (url.hostname === "127.0.0.1" || url.hostname === "localhost");
+  } catch {
+    return false;
+  }
 }
 
 async function ownedDirectory(parent: string, name: string): Promise<string | undefined> {
