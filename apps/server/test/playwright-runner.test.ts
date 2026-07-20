@@ -461,9 +461,10 @@ describe("controlled Playwright runner", () => {
       cleanupTimeoutMs: 1
     };
     const result = runCommand({ command: "npm", args: ["run", "test"] }, { cwd: ".", env: {}, timeoutMs: 100, signal: controller.signal }, operations);
+    root.stderr?.emit("data", Buffer.from("original command diagnostic"));
     controller.abort();
 
-    await expect(result).resolves.toMatchObject({ interrupted: true, timedOut: false, cleanupFailed: true, exitCode: null });
+    await expect(result).resolves.toMatchObject({ interrupted: true, timedOut: false, cleanupFailed: true, exitCode: null, stderr: "original command diagnostic\nControlled process cleanup failed." });
     expect(taskkillOne.kill).toHaveBeenCalledWith("SIGKILL");
     expect(taskkillTwo.kill).toHaveBeenCalledWith("SIGKILL");
   });
@@ -485,6 +486,38 @@ describe("controlled Playwright runner", () => {
     await server.stop();
 
     expect(kill).toHaveBeenCalledWith(-123, "SIGKILL");
+  });
+
+  it("bounds managed-server cleanup when the child never closes", async () => {
+    const child = fakeChild();
+    const kill = vi.fn();
+    const server = await startCommand({ command: "npm", args: ["run", "dev"] }, { cwd: ".", env: {}, timeoutMs: 10 }, processOperations(child, "linux", kill, 1));
+
+    await expect(server.stop()).rejects.toThrow("cleanup failed");
+    expect(kill).toHaveBeenCalledWith(-123, "SIGKILL");
+  });
+
+  it("writes managed-server output before surfacing cleanup failure", async () => {
+    const worktree = await createWorktree();
+    const root = fakeChild();
+    const taskkillOne = fakeChild();
+    const taskkillTwo = fakeChild();
+    const operations: ProcessTreeOperations = {
+      platform: "win32",
+      spawn: vi.fn().mockReturnValueOnce(root).mockReturnValueOnce(taskkillOne).mockReturnValueOnce(taskkillTwo) as typeof import("node:child_process").spawn,
+      kill: vi.fn(() => { throw new Error("denied"); }),
+      cleanupTimeoutMs: 10
+    };
+    const logPath = join(worktree, "server.log");
+    const server = await startCommand({ command: "npm", args: ["run", "dev"] }, { cwd: worktree, env: {}, timeoutMs: 10, logPath }, operations);
+    root.stdout?.emit("data", Buffer.from("server diagnostic"));
+    const stopped = server.stop();
+    taskkillOne.emit("close", 1);
+    await Promise.resolve();
+    taskkillTwo.emit("close", 1);
+
+    await expect(stopped).rejects.toThrow("cleanup failed");
+    await expect(readFile(logPath, "utf8")).resolves.toBe("server diagnostic");
   });
 
   it("removes absolute paths and external URLs without obscuring loopback URLs", async () => {

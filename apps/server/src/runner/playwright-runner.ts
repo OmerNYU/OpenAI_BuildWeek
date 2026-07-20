@@ -604,7 +604,7 @@ export function runCommand(command: NpmCommand, options: CommandOptions, process
       child.removeListener("close", onClose);
       const cleanupSucceeded = stopping ? await stopping : true;
       if (!cleanupSucceeded || cleanupFailed) {
-        stderr = "Controlled process cleanup failed.";
+        stderr = `${stderr}${stderr ? "\n" : ""}Controlled process cleanup failed.`.slice(0, maximumProcessOutputBytes);
       }
       resolvePromise({ exitCode: code, stdout, stderr, timedOut: terminationReason === "timedOut", interrupted: terminationReason === "interrupted", cleanupFailed: !cleanupSucceeded || cleanupFailed, durationMs: Date.now() - startedAt });
     };
@@ -674,17 +674,26 @@ export async function startCommand(command: NpmCommand, options: CommandOptions,
     },
     async stop() {
       stopping ??= terminateProcessTree(child.pid, processOperations);
-      if (!(await stopping)) {
-        throw new Error("Controlled process cleanup failed.");
-      }
-      if (!closed) {
-        await closedPromise;
-      }
+      const cleanupSucceeded = await stopping;
+      const closedAfterCleanup = closed || await closeWithin(closedPromise, processOperations.cleanupTimeoutMs);
       if (options.logPath) {
         await writeOwnedOutput(options.logPath, output);
       }
+      if (!cleanupSucceeded || !closedAfterCleanup) {
+        throw new Error("Controlled process cleanup failed.");
+      }
     }
   };
+}
+
+function closeWithin(closed: Promise<void>, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolvePromise) => {
+    const timeout = setTimeout(() => resolvePromise(false), timeoutMs);
+    void closed.then(() => {
+      clearTimeout(timeout);
+      resolvePromise(true);
+    });
+  });
 }
 
 export async function terminateProcessTree(pid: number | undefined, operations: ProcessTreeOperations = defaultProcessTreeOperations): Promise<boolean> {
