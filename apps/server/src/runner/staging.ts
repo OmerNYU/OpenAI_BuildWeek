@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, stat } from "node:fs/promises";
-import { isAbsolute, join, relative } from "node:path";
+import { basename, isAbsolute, join, relative } from "node:path";
 import type { GeneratedTestStagingResult } from "@failspec/contracts";
 import * as ts from "typescript";
 
@@ -48,7 +48,13 @@ const dangerousMemberNames = new Set([
   "EventSource"
 ]);
 const requestMethodNames = new Set(["fetch", "get", "post", "put", "patch", "delete", "head"]);
-const disallowedPlaywrightMethodNames = new Set(["evaluate", "evaluateHandle", "waitForFunction", "setContent", "addScriptTag", "addStyleTag"]);
+const allowedPlaywrightImports = new Set(["expect", "test"]);
+const allowedPlaywrightMethodNames = new Set([
+  "blur", "check", "click", "dblclick", "fill", "focus", "getByAltText", "getByLabel", "getByPlaceholder",
+  "getByRole", "getByTestId", "getByText", "getByTitle", "hover", "locator", "press", "selectOption", "toBe",
+  "toBeChecked", "toBeEnabled", "toBeHidden", "toBeVisible", "toContain", "toEqual", "toHaveText", "toHaveURL",
+  "toHaveValue", "toMatch", "toMatchObject", "type", "uncheck", "waitForSelector"
+]);
 
 export async function stageGeneratedTest(
   worktreePath: string,
@@ -81,21 +87,30 @@ export async function stageGeneratedTest(
   if (!root) {
     return failed("write_failed");
   }
-  const destination = join(root, stagedGeneratedTestPath);
   try {
     const testsDirectory = await ownedDirectory(root, "tests");
     const destinationDirectory = testsDirectory && await ownedDirectory(testsDirectory, "generated");
     if (!destinationDirectory) {
       return failed("write_failed");
     }
+    const destination = join(destinationDirectory, basename(stagedGeneratedTestPath));
     const handle = await open(
       destination,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
       0o600
     );
-    await handle.writeFile(content, "utf8");
-    await handle.close();
-    return { status: "staged", stagedTestPath: stagedGeneratedTestPath };
+    try {
+      const opened = await handle.stat();
+      const resolvedDestination = await realpath(destination);
+      const current = await stat(destination);
+      if (resolvedDestination !== destination || opened.dev !== current.dev || opened.ino !== current.ino) {
+        return failed("write_failed");
+      }
+      await handle.writeFile(content, "utf8");
+      return { status: "staged", stagedTestPath: stagedGeneratedTestPath };
+    } finally {
+      await handle.close();
+    }
   } catch {
     return failed("write_failed");
   }
@@ -108,7 +123,7 @@ function validateSource(sourceFile: ts.SourceFile): "import" | "api" | undefined
       return;
     }
     if (ts.isImportDeclaration(node)) {
-      if (!ts.isStringLiteral(node.moduleSpecifier) || node.moduleSpecifier.text !== "@playwright/test") {
+      if (!isAllowedPlaywrightImport(node)) {
         result = "import";
         return;
       }
@@ -128,12 +143,8 @@ function validateSource(sourceFile: ts.SourceFile): "import" | "api" | undefined
         result = "api";
         return;
       }
-      if (playwrightCall === "safe") {
-        node.arguments.forEach(visit);
-        return;
-      }
     }
-    if (ts.isIdentifier(node) && forbiddenIdentifiers.has(node.text)) {
+    if (ts.isIdentifier(node) && forbiddenIdentifiers.has(node.text) && !isApprovedDirectCallMemberName(node)) {
       result = "api";
       return;
     }
@@ -148,11 +159,10 @@ function validateSource(sourceFile: ts.SourceFile): "import" | "api" | undefined
       }
     }
     if (
-      isDisallowedPlaywrightMethod(node) ||
       isEscapedPlaywrightMethod(node) ||
       isComputedPlaywrightMethod(node) ||
       isUnresolvedComputedCapabilityCall(node) ||
-      dangerousMemberNames.has(memberName(node) ?? "") ||
+      (dangerousMemberNames.has(memberName(node) ?? "") && !isApprovedDirectCallMember(node)) ||
       (ts.isElementAccessExpression(node) &&
         memberName(node) === undefined &&
         hasSensitiveRoot(node.expression))
@@ -177,17 +187,14 @@ function memberName(node: ts.Node): string | undefined {
 }
 
 function directPlaywrightCall(node: ts.CallExpression): "safe" | "unsafe" | undefined {
-  if (ts.isIdentifier(node.expression) && (node.expression.text === "goto" || requestMethodNames.has(node.expression.text))) {
-    return "unsafe";
+  if (ts.isIdentifier(node.expression)) {
+    return node.expression.text === "test" || node.expression.text === "expect" ? "safe" : "unsafe";
   }
   if (!ts.isPropertyAccessExpression(node.expression)) {
-    return undefined;
+    return "unsafe";
   }
   const name = node.expression.name.text;
   const receiver = node.expression.expression;
-  if (disallowedPlaywrightMethodNames.has(name)) {
-    return "unsafe";
-  }
   if (name === "goto" || requestMethodNames.has(name)) {
     if (!((name === "goto" && isPageReceiver(receiver)) ||
       (requestMethodNames.has(name) && isRequestReceiver(receiver)))) {
@@ -196,7 +203,7 @@ function directPlaywrightCall(node: ts.CallExpression): "safe" | "unsafe" | unde
     const target = node.arguments[0] && staticString(node.arguments[0]);
     return target && isLocalTarget(target) ? "safe" : "unsafe";
   }
-  return undefined;
+  return allowedPlaywrightMethodNames.has(name) ? "safe" : "unsafe";
 }
 
 function isEscapedPlaywrightMethod(node: ts.Node): boolean {
@@ -208,12 +215,17 @@ function isEscapedPlaywrightMethod(node: ts.Node): boolean {
     (!ts.isCallExpression(node.parent) || node.parent.expression !== node);
 }
 
-function isDisallowedPlaywrightMethod(node: ts.Node): boolean {
-  return ts.isPropertyAccessExpression(node) && disallowedPlaywrightMethodNames.has(node.name.text);
-}
-
 function isComputedPlaywrightMethod(node: ts.Node): boolean {
   return ts.isElementAccessExpression(node) && isPageOrRequestReceiver(node.expression);
+}
+
+function isApprovedDirectCallMember(node: ts.Node): boolean {
+  return ts.isPropertyAccessExpression(node) && ts.isCallExpression(node.parent) &&
+    node.parent.expression === node && directPlaywrightCall(node.parent) === "safe";
+}
+
+function isApprovedDirectCallMemberName(node: ts.Identifier): boolean {
+  return ts.isPropertyAccessExpression(node.parent) && node.parent.name === node && isApprovedDirectCallMember(node.parent);
 }
 
 function isUnresolvedComputedCapabilityCall(node: ts.Node): boolean {
@@ -267,6 +279,9 @@ function stringValue(node: ts.Node): string | undefined {
 }
 
 function isLocalTarget(target: string): boolean {
+  if (target.includes("\\") || target.startsWith("//")) {
+    return false;
+  }
   if (target.startsWith("/") || target.startsWith("./") || target.startsWith("../") || target.startsWith("?") || target.startsWith("#")) {
     return true;
   }
@@ -277,6 +292,15 @@ function isLocalTarget(target: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isAllowedPlaywrightImport(node: ts.ImportDeclaration): boolean {
+  if (!ts.isStringLiteral(node.moduleSpecifier) || node.moduleSpecifier.text !== "@playwright/test" || node.importClause?.isTypeOnly) {
+    return false;
+  }
+  const bindings = node.importClause?.namedBindings;
+  return Boolean(bindings && ts.isNamedImports(bindings) && bindings.elements.length > 0 &&
+    bindings.elements.every((specifier) => !specifier.propertyName && allowedPlaywrightImports.has(specifier.name.text)));
 }
 
 async function ownedDirectory(parent: string, name: string): Promise<string | undefined> {

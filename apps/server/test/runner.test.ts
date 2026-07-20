@@ -55,6 +55,13 @@ describe("generated-test staging", () => {
     });
   });
 
+  it("allows only test and expect imports from @playwright/test", async () => {
+    const worktree = await createWorktree();
+    await expect(stageGeneratedTest(worktree, "import { chromium } from '@playwright/test';")).resolves.toMatchObject({
+      status: "rejected", failure: { code: "disallowed_import" }
+    });
+  });
+
   it("rejects dynamic imports of forbidden Node modules", async () => {
     const worktree = await createWorktree();
     for (const module of ["node:child_process", "node:fs", "node:net", "node:worker_threads"]) {
@@ -194,7 +201,10 @@ describe("generated-test staging", () => {
       "page.goto('https://' + 'example.com');",
       "page.goto(target);",
       "request.get(`https://example.com`);",
-      "page.request.post('/api/' + endpoint);"
+      "page.request.post('/api/' + endpoint);",
+      "page.goto('//example.com');",
+      "request.get('//example.com');",
+      "page.goto('/\\\\example.com');"
     ]) {
       await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
         status: "rejected", failure: { code: "disallowed_api" }
@@ -256,6 +266,20 @@ describe("generated-test staging", () => {
     ]) {
       await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
         status: "rejected", failure: { code: "disallowed_api" }
+      });
+    }
+  });
+
+  it("rejects non-allowlisted Playwright capabilities", async () => {
+    const worktree = await createWorktree();
+    for (const content of [
+      "import { chromium } from '@playwright/test'; await chromium.connectOverCDP('ws://example.com');",
+      "page.route('**/*', () => {});",
+      "page.screenshot();",
+      "Reflect.apply(page.goto, page, ['/']);"
+    ]) {
+      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
+        status: "rejected"
       });
     }
   });
