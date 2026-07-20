@@ -101,6 +101,13 @@ describe("generated-test staging", () => {
     });
   });
 
+  it("rejects Node process-root usage", async () => {
+    const worktree = await createWorktree();
+    await expect(stageGeneratedTest(worktree, "process.binding('f' + 's');")).resolves.toMatchObject({
+      status: "rejected", failure: { code: "disallowed_api" }
+    });
+  });
+
   it("rejects forbidden APIs", async () => {
     const worktree = await createWorktree();
     await expect(stageGeneratedTest(worktree, "eval('1');")).resolves.toMatchObject({
@@ -152,6 +159,13 @@ describe("generated-test staging", () => {
         status: "rejected", failure: { code: "disallowed_api" }
       });
     }
+  });
+
+  it("rejects aliases of global capability roots", async () => {
+    const worktree = await createWorktree();
+    await expect(stageGeneratedTest(worktree, "const root = globalThis; root['fe' + 'tch']('https://' + 'example.com');")).resolves.toMatchObject({
+      status: "rejected", failure: { code: "disallowed_api" }
+    });
   });
 
   it("allows only local static Playwright navigation and request targets", async () => {
