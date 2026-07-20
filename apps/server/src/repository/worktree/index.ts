@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, rename, rm, stat, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, realpath, rename, rm, stat, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import type { WorktreeFailureCode, WorktreePreparationResult } from "@failspec/contracts";
@@ -35,6 +35,7 @@ export interface WorktreeOptions {
     platform?: NodeJS.Platform;
     environment?: NodeJS.ProcessEnv;
     beforeMetadataUpdate?: () => void | Promise<void>;
+    beforeWorktreePermissions?: () => void | Promise<void>;
     beforePartialCleanup?: () => void | Promise<void>;
   };
 }
@@ -97,6 +98,11 @@ export async function prepareIsolatedWorktree(
 
   const created = await gitRunner.run(sourcePath, ["worktree", "add", "--detach", worktreePath, "HEAD"]);
   if (created.kind !== "completed" || created.exitCode !== 0) {
+    return preparationFailure("creation_failed");
+  }
+
+  if (!(await makeWorktreePrivate(worktreePath, rootConfiguration?.platform ?? process.platform, options.testHooks?.beforeWorktreePermissions))) {
+    await cleanupIsolatedWorktree(investigationId, options);
     return preparationFailure("creation_failed");
   }
 
@@ -264,6 +270,23 @@ function isPrivateToCurrentUser(entry: Awaited<ReturnType<typeof stat>>): boolea
   return typeof process.getuid === "function" &&
     entry.uid === process.getuid() &&
     (Number(entry.mode) & 0o022) === 0;
+}
+
+async function makeWorktreePrivate(
+  path: string,
+  platform: NodeJS.Platform,
+  beforePermissions?: () => void | Promise<void>
+): Promise<boolean> {
+  if (platform === "win32") {
+    return true;
+  }
+  try {
+    await beforePermissions?.();
+    await chmod(path, 0o700);
+    return isPrivateToCurrentUser(await stat(path));
+  } catch {
+    return false;
+  }
 }
 
 async function canonicalDirectory(path: string): Promise<string | undefined> {
