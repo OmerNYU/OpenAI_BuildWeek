@@ -2,6 +2,7 @@ import express, { type ErrorRequestHandler } from "express";
 import type { CodexAdapter, RunnerAdapter } from "@failspec/core";
 import { createInvestigationsRouter } from "./routes/investigations.js";
 import { InvestigationService } from "./services/investigation-service.js";
+import type { RepositoryWorkspace } from "./repository/repository-workspace.js";
 import type { WorkflowScheduler } from "./scheduling/workflow-scheduler.js";
 import type { InvestigationStore } from "./storage/investigation-store.js";
 
@@ -10,6 +11,7 @@ export interface AppDependencies {
   codexAdapter: CodexAdapter;
   runnerAdapter: RunnerAdapter;
   scheduler: WorkflowScheduler;
+  repositoryWorkspace: RepositoryWorkspace;
 }
 
 export function createApp(dependencies: AppDependencies) {
@@ -18,7 +20,8 @@ export function createApp(dependencies: AppDependencies) {
     dependencies.store,
     dependencies.codexAdapter,
     dependencies.runnerAdapter,
-    dependencies.scheduler
+    dependencies.scheduler,
+    dependencies.repositoryWorkspace
   );
 
   app.use(express.json());

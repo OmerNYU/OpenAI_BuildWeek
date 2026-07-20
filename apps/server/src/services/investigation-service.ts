@@ -12,13 +12,15 @@ import {
 } from "@failspec/core";
 import type { InvestigationStore } from "../storage/investigation-store.js";
 import type { WorkflowScheduler } from "../scheduling/workflow-scheduler.js";
+import type { RepositoryWorkspace } from "../repository/repository-workspace.js";
 
 export class InvestigationService {
   constructor(
     private readonly store: InvestigationStore,
     private readonly codexAdapter: CodexAdapter,
     private readonly runnerAdapter: RunnerAdapter,
-    private readonly scheduler: WorkflowScheduler
+    private readonly scheduler: WorkflowScheduler,
+    private readonly repositoryWorkspace: RepositoryWorkspace
   ) {}
 
   async create(request: InvestigationRequest): Promise<Investigation> {
@@ -47,6 +49,8 @@ export class InvestigationService {
 
   private async runWorkflow(investigation: Investigation): Promise<Investigation> {
     let lastPersisted = structuredClone(investigation);
+    let preparedWorkspace = false;
+    let cleanupAttempted = false;
 
     const persist = async () => {
       await this.store.save(investigation);
@@ -61,16 +65,37 @@ export class InvestigationService {
       await persist();
     };
 
+    const cleanup = async (): Promise<boolean> => {
+      cleanupAttempted = true;
+      try {
+        return (await this.repositoryWorkspace.cleanup(investigation.id)).status === "cleaned";
+      } catch {
+        return false;
+      }
+    };
+
     try {
-      await transition("preflight", "Mock preflight completed.");
+      await transition("preflight", "Repository preflight started.");
+      const preparation = await this.repositoryWorkspace.prepare(
+        investigation.request.repositoryPath,
+        investigation.id
+      );
+      if (preparation.status !== "prepared") {
+        throw new WorkflowFailure("The repository could not be prepared safely.");
+      }
+      preparedWorkspace = true;
+      const workspaceRequest = {
+        ...investigation.request,
+        repositoryPath: preparation.workspace.workspacePath
+      };
       await transition("analyzing", "Analyzing the reported failure.");
-      const analysis = await this.codexAdapter.analyze(investigation.request);
+      const analysis = await this.codexAdapter.analyze(workspaceRequest);
       investigation.hypothesis = analysis.hypothesis;
       investigation.analysisEvidence = analysis.evidence;
       await transition("hypothesis_ready", "Reproduction hypothesis is ready.");
       await transition("generating_test", "Generating a regression test.");
       const generatedTest = await this.codexAdapter.generateTest({
-        request: investigation.request,
+        request: workspaceRequest,
         hypothesis: analysis.hypothesis
       });
       investigation.generatedTestContent = generatedTest.content;
@@ -78,15 +103,21 @@ export class InvestigationService {
       await transition("test_ready", "Generated test is ready.");
       await transition("executing", "Running the generated test.");
       const runnerOutput = await this.runnerAdapter.run({
-        repositoryPath: investigation.request.repositoryPath,
+        repositoryPath: preparation.workspace.workspacePath,
         generatedTest
       });
       investigation.execution = runnerOutput.execution;
       investigation.verdictExplanation = "The deterministic mock runner returned the expected reproduction signal.";
       investigation.recommendedNextStep = "Review the generated regression test before running it against a real repository.";
+      if (!(await cleanup())) {
+        throw new WorkflowFailure("The repository workspace could not be cleaned up safely.");
+      }
       await transition("verified", "Mock reproduction verified.");
       return investigation;
     } catch (error: unknown) {
+      if (preparedWorkspace && !cleanupAttempted) {
+        await cleanup();
+      }
       return this.recordWorkflowError(lastPersisted, investigation, error);
     }
   }
@@ -107,7 +138,9 @@ export class InvestigationService {
       throw error;
     }
 
-    const message = "Investigation workflow failed.";
+    const message = error instanceof WorkflowFailure
+      ? error.message
+      : "Investigation workflow failed.";
     assertTransition(investigation.status, "execution_error");
     investigation.status = "execution_error";
     investigation.updatedAt = new Date().toISOString();
@@ -122,3 +155,5 @@ export class InvestigationService {
     return investigation;
   }
 }
+
+class WorkflowFailure extends Error {}

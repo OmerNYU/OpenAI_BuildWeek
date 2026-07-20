@@ -6,6 +6,11 @@ import { CodexInvestigationAdapter } from "./codex/adapter.js";
 import { CodexJsonlClient, type CodexCliExecutor } from "./codex/client.js";
 import { createLocalCodexCliExecutor } from "./codex/executor.js";
 import { InProcessWorkflowScheduler } from "./scheduling/workflow-scheduler.js";
+import {
+  LocalRepositoryWorkspace,
+  PassThroughRepositoryWorkspace,
+  type RepositoryWorkspace
+} from "./repository/repository-workspace.js";
 import { JsonInvestigationStore } from "./storage/json-investigation-store.js";
 
 export type CodexMode = "mock" | "local";
@@ -14,6 +19,7 @@ export interface RuntimeDependencyOptions {
   env?: NodeJS.ProcessEnv;
   codexCliExecutor?: CodexCliExecutor;
   investigationDirectory?: string;
+  repositoryWorkspace?: RepositoryWorkspace;
 }
 
 export function createRuntimeDependencies(
@@ -28,8 +34,15 @@ export function createRuntimeDependencies(
     ),
     codexAdapter,
     runnerAdapter: new MockRunnerAdapter(),
-    scheduler: new InProcessWorkflowScheduler()
+    scheduler: new InProcessWorkflowScheduler(),
+    repositoryWorkspace: options.repositoryWorkspace ?? createRepositoryWorkspace(mode)
   };
+}
+
+function createRepositoryWorkspace(mode: CodexMode): RepositoryWorkspace {
+  return mode === "local"
+    ? new LocalRepositoryWorkspace()
+    : new PassThroughRepositoryWorkspace();
 }
 
 export function parseCodexMode(value: string | undefined): CodexMode {
