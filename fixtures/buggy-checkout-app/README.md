@@ -23,7 +23,7 @@ The reference test confirms the known buggy output, `$12.00`. The bug report des
 npm run test:generated
 ```
 
-Reference tests live in `tests/reference/`. Generated tests belong in `tests/generated/` and must not replace the reference test. Both directories are discovered by the Playwright configuration.
+Reference tests live in `tests/reference/`. Generated tests belong in `tests/generated/` and must not replace the reference test. The controlled generated-test script selects only `failspec.generated.spec.ts`.
 
 ## Runner compatibility
 

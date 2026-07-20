@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, stat } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, realpath, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { ExecutionEvidence, RunnerOutput } from "@failspec/contracts";
@@ -33,6 +33,7 @@ export interface CommandResult {
 }
 
 export interface RunningCommand {
+  isRunning(): boolean;
   stop(): Promise<void>;
 }
 
@@ -78,7 +79,7 @@ export class PlaywrightRunnerAdapter implements RunnerAdapter {
   }
 
   private async execute(input: RunnerInput, startedAt: number): Promise<RunnerOutput> {
-    const worktreePath = await stagedTestWorktree(input.repositoryPath, input.generatedTest.path);
+    const worktreePath = await stagedTestWorktree(input.repositoryPath, input.generatedTest.path, input.generatedTest.content);
     if (!worktreePath) {
       return unavailableOutput(startedAt);
     }
@@ -88,7 +89,7 @@ export class PlaywrightRunnerAdapter implements RunnerAdapter {
       return unavailableOutput(startedAt);
     }
     const output = await runnerPaths(worktreePath);
-    if (!output) {
+    if (!output || !(await outputFilesAreAbsent(output))) {
       return unavailableOutput(startedAt);
     }
 
@@ -125,18 +126,22 @@ export class PlaywrightRunnerAdapter implements RunnerAdapter {
     }
 
     try {
-      if (!(await this.operations.waitForReady(baseUrl))) {
+      if (!server.isRunning() || !(await this.operations.waitForReady(baseUrl)) || !server.isRunning()) {
         return unavailableOutput(startedAt);
       }
       const result = await this.operations.run(testCommand(policyResult.policy, output.artifactsPath), {
         cwd: worktreePath,
-        env: { ...environment, FAILSPEC_BASE_URL: baseUrl, FAILSPEC_MANAGED_SERVER: "1" },
+        env: {
+          ...environment,
+          FAILSPEC_BASE_URL: baseUrl,
+          FAILSPEC_MANAGED_SERVER: "1",
+          PLAYWRIGHT_JSON_OUTPUT_NAME: output.reportPath
+        },
         timeoutMs: testTimeoutMs
       });
-      if (!(await writeOwnedOutput(output.reportPath, result.stdout)) || !(await writeOwnedOutput(output.stderrLog, result.stderr))) {
-        return unavailableOutput(startedAt);
-      }
-      return outputFromResult(result, worktreePath, output.artifactsPath);
+      const report = result.timedOut ? undefined : await readOwnedOutput(output.reportPath);
+      await writeOwnedOutput(output.stderrLog, result.stderr);
+      return outputFromResult(result, report, worktreePath, output.artifactsPath);
     } finally {
       await server.stop().catch(() => undefined);
     }
@@ -151,7 +156,7 @@ function testCommand(policy: RepositoryCommandPolicy, artifactsPath: string): Np
   };
 }
 
-async function stagedTestWorktree(repositoryPath: string, generatedTestPath: string | undefined): Promise<string | undefined> {
+async function stagedTestWorktree(repositoryPath: string, generatedTestPath: string | undefined, generatedTestContent: string): Promise<string | undefined> {
   if (generatedTestPath !== stagedGeneratedTestPath) {
     return undefined;
   }
@@ -163,10 +168,16 @@ async function stagedTestWorktree(repositoryPath: string, generatedTestPath: str
     const testPath = join(worktreePath, stagedGeneratedTestPath);
     const entry = await lstat(testPath);
     const resolvedTestPath = await realpath(testPath);
-    return entry.isFile() && !entry.isSymbolicLink() && resolvedTestPath === testPath ? worktreePath : undefined;
+    return entry.isFile() && !entry.isSymbolicLink() && resolvedTestPath === testPath && await readFile(testPath, "utf8") === generatedTestContent
+      ? worktreePath
+      : undefined;
   } catch {
     return undefined;
   }
+}
+
+async function outputFilesAreAbsent(paths: { reportPath: string; stderrLog: string; serverLog: string }): Promise<boolean> {
+  return Promise.all([paths.reportPath, paths.stderrLog, paths.serverLog].map(async (path) => !(await lstat(path).catch(() => undefined)))).then((result) => result.every(Boolean));
 }
 
 async function runnerPaths(worktreePath: string): Promise<{ reportPath: string; stderrLog: string; serverLog: string; artifactsPath: string } | undefined> {
@@ -212,8 +223,20 @@ async function writeOwnedOutput(path: string, content: string): Promise<boolean>
   }
 }
 
-function outputFromResult(result: CommandResult, worktreePath: string, artifactsPath: string): RunnerOutput {
-  const evidence = result.timedOut ? emptyEvidence("timedOut") : parseEvidence(result.stdout, worktreePath, artifactsPath);
+async function readOwnedOutput(path: string): Promise<string | undefined> {
+  try {
+    const entry = await lstat(path);
+    if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1 || entry.size > maximumProcessOutputBytes || await realpath(path) !== path) {
+      return undefined;
+    }
+    return await readFile(path, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+async function outputFromResult(result: CommandResult, report: string | undefined, worktreePath: string, artifactsPath: string): Promise<RunnerOutput> {
+  const evidence = result.timedOut ? emptyEvidence("timedOut") : report === undefined ? emptyEvidence("unknown") : await parseEvidence(report, worktreePath, artifactsPath);
   return {
     execution: {
       command: "controlled_playwright_generated_test",
@@ -243,22 +266,23 @@ function unavailableOutput(startedAt: number): RunnerOutput {
   };
 }
 
-function parseEvidence(report: string, worktreePath: string, artifactsPath: string): ExecutionEvidence {
+async function parseEvidence(report: string, worktreePath: string, artifactsPath: string): Promise<ExecutionEvidence> {
   try {
-    const result = findTestResult(JSON.parse(report));
-    if (!result) {
+    const results = finalResults(JSON.parse(report));
+    if (results.length === 0) {
       return emptyEvidence("unknown");
     }
-    const errors = Array.isArray(result.errors) ? result.errors : [];
-    const error = asRecord(errors[0]);
+    const selected = [...results].sort((left, right) => left.project.localeCompare(right.project) || left.index - right.index);
+    const result = selected[0]!;
+    const error = selected.map((entry) => firstError(entry.result)).find((entry) => Object.keys(entry).length > 0) ?? {};
     const location = asRecord(error.location);
     const matcher = asRecord(error.matcherResult);
     return {
-      testTitle: text(result.title),
-      testStatus: status(result.status),
-      assertionFailureMessage: text(error.message),
-      expectedValue: text(matcher.expected),
-      actualValue: text(matcher.actual),
+      testTitle: text(result.title, worktreePath),
+      testStatus: aggregateStatus(selected.map((entry) => entry.result.status)),
+      assertionFailureMessage: text(error.message, worktreePath),
+      expectedValue: text(matcher.expected, worktreePath),
+      actualValue: text(matcher.actual, worktreePath),
       failureLocation: location.file && containedPath(worktreePath, String(location.file))
         ? {
             file: containedPath(worktreePath, String(location.file))!,
@@ -268,44 +292,74 @@ function parseEvidence(report: string, worktreePath: string, artifactsPath: stri
         : undefined,
       consoleErrors: [],
       pageErrors: [],
-      artifactPaths: artifactPaths(result.attachments, worktreePath, artifactsPath)
+      artifactPaths: await artifactPaths(selected.flatMap((entry) => Array.isArray(entry.result.attachments) ? entry.result.attachments : []), worktreePath, artifactsPath)
     };
   } catch {
     return emptyEvidence("unknown");
   }
 }
 
-function findTestResult(report: unknown): Record<string, unknown> | undefined {
-  const pending: Array<{ value: unknown; title?: string }> = [{ value: report }];
+interface ReporterResult {
+  result: Record<string, unknown>;
+  title?: string;
+  project: string;
+  index: number;
+}
+
+function finalResults(report: unknown): ReporterResult[] {
+  const pending: Array<{ value: unknown; title?: string; project?: string }> = [{ value: report }];
+  const attempts = new Map<string, ReporterResult>();
   let visited = 0;
   while (pending.length > 0 && ++visited <= 10_000) {
     const item = pending.pop();
     const current = asRecord(item?.value);
     const title = typeof current.title === "string" ? current.title : item?.title;
-    if (Array.isArray(current.results) && current.results.length > 0) {
-      const result = asRecord(current.results[0]);
-      return { ...result, title: title ?? result.title };
+    const project = typeof current.projectName === "string" ? current.projectName : item?.project ?? "default";
+    if (Array.isArray(current.results)) {
+      for (const [index, value] of current.results.entries()) {
+        const result = asRecord(value);
+        const attempt = typeof result.retry === "number" ? result.retry : index;
+        const key = `${project}\u0000${title ?? ""}`;
+        const previous = attempts.get(key);
+        if (!previous || attempt >= previous.index) {
+          attempts.set(key, { result: { ...result, title: title ?? result.title }, title, project, index: attempt });
+        }
+      }
     }
     for (const value of Object.values(current)) {
       if (Array.isArray(value)) {
-        pending.push(...value.map((entry) => ({ value: entry, title })));
+        pending.push(...value.map((entry) => ({ value: entry, title, project })));
       } else if (typeof value === "object" && value !== null) {
-        pending.push({ value, title });
+        pending.push({ value, title, project });
       }
     }
   }
-  return undefined;
+  return [...attempts.values()];
 }
 
-function artifactPaths(value: unknown, worktreePath: string, artifactsPath: string): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.flatMap((attachment) => {
+function firstError(result: Record<string, unknown>): Record<string, unknown> {
+  const errors = Array.isArray(result.errors) ? result.errors : [];
+  return asRecord(errors[0]);
+}
+
+async function artifactPaths(value: unknown[], worktreePath: string, artifactsPath: string): Promise<string[]> {
+  const paths = await Promise.all(value.map(async (attachment) => {
     const path = asRecord(attachment).path;
     const normalized = typeof path === "string" && containedPath(artifactsPath, path);
-    return normalized && containedPath(worktreePath, resolve(artifactsPath, normalized)) ? [join(runnerOutputDirectory, "artifacts", normalized)] : [];
-  });
+    if (!normalized || !containedPath(worktreePath, resolve(artifactsPath, normalized))) {
+      return undefined;
+    }
+    const artifact = resolve(artifactsPath, normalized);
+    try {
+      const entry = await lstat(artifact);
+      return entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1 && await realpath(artifact) === artifact
+        ? join(runnerOutputDirectory, "artifacts", normalized)
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }));
+  return [...new Set(paths.filter((path): path is string => path !== undefined))].sort();
 }
 
 function containedPath(root: string, candidate: string): string | undefined {
@@ -314,7 +368,12 @@ function containedPath(root: string, candidate: string): string | undefined {
   return path.length > 0 && !path.startsWith("..") && !isAbsolute(path) ? path : undefined;
 }
 
-function status(value: unknown): ExecutionEvidence["testStatus"] {
+function aggregateStatus(values: unknown[]): NonNullable<ExecutionEvidence["testStatus"]> {
+  const statuses = values.map(status);
+  return ["failed", "timedOut", "interrupted", "skipped", "passed"].find((candidate) => statuses.includes(candidate as NonNullable<ExecutionEvidence["testStatus"]>)) as NonNullable<ExecutionEvidence["testStatus"]> | undefined ?? "unknown";
+}
+
+function status(value: unknown): NonNullable<ExecutionEvidence["testStatus"]> {
   return value === "passed" || value === "failed" || value === "skipped" || value === "timedOut" || value === "interrupted" ? value : "unknown";
 }
 
@@ -326,13 +385,17 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-function text(value: unknown): string | undefined {
+function text(value: unknown, worktreePath: string): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
-  const sanitized = value
-    .replace(/[A-Za-z]:[\\/][^\s]+/g, "[path]")
-    .replace(/\/(?:[^\s/]+\/)+[^\s/]+/g, "[path]")
+  const urls: string[] = [];
+  const protectedUrls = value.replace(/https?:\/\/[^\s]+/g, (url) => `[[FAILSPEC_URL_${urls.push(url) - 1}]]`);
+  const worktreeVariants = new Set([worktreePath, worktreePath.replaceAll("/", "\\"), worktreePath.replaceAll("\\", "/")]);
+  const sanitized = [...worktreeVariants].reduce((current, path) => current.replaceAll(path, "[worktree]"), protectedUrls
+    .replace(/[A-Za-z]:[\\/][^\r\n]*/g, "[path]")
+    .replace(/\/(?:[^\r\n]*)/g, "[path]"))
+    .replace(/\[\[FAILSPEC_URL_(\d+)\]\]/g, (_match, index: string) => urls[Number(index)] ?? "")
     .trim()
     .slice(0, maximumEvidenceTextLength);
   return sanitized || undefined;
@@ -368,11 +431,11 @@ async function allocatePort(): Promise<number> {
   return typeof address === "object" && address ? address.port : Promise.reject(new Error("Port unavailable."));
 }
 
-async function waitForReady(url: string): Promise<boolean> {
+export async function waitForReady(url: string): Promise<boolean> {
   const deadline = Date.now() + startupTimeoutMs;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(readinessIntervalMs) });
+      const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(readinessIntervalMs) });
       if (response.ok) {
         return true;
       }
@@ -428,6 +491,9 @@ async function startCommand(command: NpmCommand, options: CommandOptions): Promi
   child.stdout?.on("data", append);
   child.stderr?.on("data", append);
   return {
+    isRunning() {
+      return !closed;
+    },
     async stop() {
       if (!child.killed) {
         child.kill();

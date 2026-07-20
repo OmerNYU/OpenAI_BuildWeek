@@ -5,7 +5,7 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import type { RepositoryPreflightResult } from "@failspec/contracts";
 
 export const approvedScriptNames = ["dev", "test:generated"] as const;
-export const approvedGeneratedTestScript = "playwright test tests/generated";
+export const approvedGeneratedTestScript = "playwright test tests/generated/failspec.generated.spec.ts";
 export const supportedFrameworkPolicies = {
   next: { requiredDependencies: ["next", "react", "react-dom"], devScript: "next dev" },
   vite: { requiredDependencies: ["react", "react-dom", "vite"], devScript: "vite" }

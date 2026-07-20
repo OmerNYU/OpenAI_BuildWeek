@@ -49,7 +49,7 @@ npm run dev:server
 
 Mock mode uses pass-through repository preparation: it performs no Git commands or preflight checks and uses the submitted repository path directly. Local mode runs repository preflight and consumes the existing deterministic isolated-worktree boundary. Codex analysis, test generation, and the mocked runner boundary receive the prepared workspace path; cleanup uses that same existing boundary. The submitted repository path remains persisted with the investigation.
 
-Runner execution and verdict classification remain mocked; generated-test staging and real Playwright execution are not implemented.
+Generated-test staging and controlled Playwright execution are implemented as Person 3 boundaries, but orchestration still injects the deterministic mock runner until the separate integration work lands. Verdict classification remains mocked.
 
 ## Investigation API
 

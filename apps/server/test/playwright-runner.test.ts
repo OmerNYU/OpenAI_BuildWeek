@@ -1,9 +1,10 @@
 import { link, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PlaywrightRunnerAdapter,
+  waitForReady,
   type CommandResult,
   type RunnerOperations
 } from "../src/runner/playwright-runner.js";
@@ -19,6 +20,7 @@ describe("controlled Playwright runner", () => {
   it("runs only the staged path with fixed runner arguments", async () => {
     const worktree = await createWorktree();
     const canonicalWorktree = await realpath(worktree);
+    await writeFile(join(worktree, "tests", "generated", "sentinel.spec.ts"), "must not run", "utf8");
     const operations = fakeOperations(report("passed"));
     const output = await new PlaywrightRunnerAdapter(operations).run(input(worktree));
 
@@ -62,6 +64,18 @@ describe("controlled Playwright runner", () => {
     });
   });
 
+  it("requires staged content to match the generated-test handoff", async () => {
+    const worktree = await createWorktree();
+    const operations = fakeOperations(report("passed"));
+    const output = await new PlaywrightRunnerAdapter(operations).run({
+      repositoryPath: worktree,
+      generatedTest: { path: stagedGeneratedTestPath, content: "different" }
+    });
+
+    expect(operations.createPolicy).not.toHaveBeenCalled();
+    expect(output.evidence.testStatus).toBe("unknown");
+  });
+
   it("installs through the approved npm command and records only a successful install", async () => {
     const worktree = await createWorktree();
     const operations = fakeOperations(report("passed"));
@@ -96,6 +110,34 @@ describe("controlled Playwright runner", () => {
     expect(JSON.stringify(output)).not.toContain(worktree);
   });
 
+  it("uses the reporter file instead of noisy npm stdout", async () => {
+    const worktree = await createWorktree();
+    const output = await new PlaywrightRunnerAdapter(fakeOperations(report("passed"), {
+      stdout: "> package test:generated\n> playwright test\nnot json"
+    })).run(input(worktree));
+
+    expect(output.evidence).toMatchObject({ testTitle: "generated checkout", testStatus: "passed" });
+  });
+
+  it("uses final retries and aggregates project statuses deterministically", async () => {
+    const worktree = await createWorktree();
+    const retryReport = projectsReport([
+      { project: "chromium", results: [{ status: "failed", retry: 0 }, { status: "passed", retry: 1 }] },
+      { project: "firefox", results: [{ status: "passed", retry: 0 }] }
+    ]);
+    await expect(new PlaywrightRunnerAdapter(fakeOperations(retryReport)).run(input(worktree))).resolves.toMatchObject({
+      evidence: { testStatus: "passed" }
+    });
+
+    const failureReport = projectsReport([
+      { project: "firefox", results: [{ status: "passed", retry: 0 }] },
+      { project: "chromium", results: [{ status: "failed", retry: 0, errors: [{ message: "chromium failure" }] }] }
+    ]);
+    await expect(new PlaywrightRunnerAdapter(fakeOperations(failureReport)).run(input(await createWorktree()))).resolves.toMatchObject({
+      evidence: { testStatus: "failed", assertionFailureMessage: "chromium failure" }
+    });
+  });
+
   it("records a bounded timeout as execution fact without assigning a verdict", async () => {
     const worktree = await createWorktree();
     const operations = fakeOperations("", { timedOut: true, exitCode: null });
@@ -113,6 +155,63 @@ describe("controlled Playwright runner", () => {
     const output = await new PlaywrightRunnerAdapter(fakeOperations("not json")).run(input(worktree));
 
     expect(output).toMatchObject({ evidence: { testStatus: "unknown", artifactPaths: [] } });
+  });
+
+  it("preserves failed execution facts when Playwright produces no reporter file", async () => {
+    const worktree = await createWorktree();
+    const operations = fakeOperations(report("passed"));
+    operations.run = vi.fn(async () => ({
+      exitCode: 1,
+      stdout: "> npm run test:generated",
+      stderr: "reporter failed",
+      timedOut: false,
+      durationMs: 321
+    }));
+
+    const output = await new PlaywrightRunnerAdapter(operations).run(input(worktree));
+
+    expect(output).toMatchObject({
+      execution: { command: "controlled_playwright_generated_test", exitCode: 1, timedOut: false, durationMs: 321 },
+      evidence: { testStatus: "unknown", artifactPaths: [] }
+    });
+  });
+
+  it("rejects a readiness response if the managed child has already exited", async () => {
+    const worktree = await createWorktree();
+    const operations = fakeOperations(report("passed"));
+    operations.start = vi.fn(async () => ({ isRunning: () => false, stop: operations.stop }));
+
+    const output = await new PlaywrightRunnerAdapter(operations).run(input(worktree));
+
+    expect(operations.run).not.toHaveBeenCalled();
+    expect(operations.stop).toHaveBeenCalledTimes(1);
+    expect(output.evidence.testStatus).toBe("unknown");
+  });
+
+  it("uses redirect:error for loopback readiness", async () => {
+    const fetch = vi.fn(async () => new Response("ok"));
+    vi.stubGlobal("fetch", fetch);
+    try {
+      await expect(waitForReady("http://127.0.0.1:43123")).resolves.toBe(true);
+      expect(fetch).toHaveBeenCalledWith("http://127.0.0.1:43123", expect.objectContaining({ redirect: "error" }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("removes spaced absolute paths without obscuring loopback URLs", async () => {
+    const worktree = await createWorktree();
+    const output = await new PlaywrightRunnerAdapter(fakeOperations(projectsReport([{
+      project: "chromium",
+      results: [{
+        status: "failed",
+        retry: 0,
+        errors: [{ message: "C:\\Users\\Omer Hayat\\repo\\secret.ts:1:2\n/Users/Omer Hayat/repo/secret.ts:3:4\nhttp://127.0.0.1:43123/checkout" }]
+      }]
+    }]))).run(input(worktree));
+
+    expect(output.evidence.assertionFailureMessage).not.toContain("Omer Hayat");
+    expect(output.evidence.assertionFailureMessage).toContain("http://127.0.0.1:43123/checkout");
   });
 
   it("does not overwrite a pre-existing runner report inode", async () => {
@@ -141,7 +240,7 @@ async function createWorktree(): Promise<string> {
 }
 
 function input(worktree: string) {
-  return { repositoryPath: worktree, generatedTest: { path: stagedGeneratedTestPath, content: "ignored" } };
+  return { repositoryPath: worktree, generatedTest: { path: stagedGeneratedTestPath, content: "staged" } };
 }
 
 function fakeOperations(reporter: string, result: Partial<CommandResult> = {}): RunnerOperations & { stop: ReturnType<typeof vi.fn> } {
@@ -164,8 +263,18 @@ function fakeOperations(reporter: string, result: Partial<CommandResult> = {}): 
     recordInstall: vi.fn(async () => ({ kind: "recorded" as const })),
     allocatePort: vi.fn(async () => 43123),
     waitForReady: vi.fn(async () => true),
-    run: vi.fn(async () => complete),
-    start: vi.fn(async () => ({ stop })),
+    run: vi.fn(async (command, options) => {
+      if (command.args.includes("test:generated")) {
+        const reportPath = options.env.PLAYWRIGHT_JSON_OUTPUT_NAME;
+        if (reportPath) {
+          await mkdir(join(dirname(reportPath), "artifacts"), { recursive: true });
+          await writeFile(join(dirname(reportPath), "artifacts", "trace.zip"), "trace", "utf8");
+          await writeFile(reportPath, reporter, "utf8");
+        }
+      }
+      return complete;
+    }),
+    start: vi.fn(async () => ({ isRunning: () => true, stop })),
     stop
   };
 }
@@ -180,5 +289,14 @@ function report(status: string, worktree = ""): string {
       }] : [],
       attachments: [{ path: "trace.zip" }, { path: "../../secret.zip" }]
     }] }] }] }]
+  });
+}
+
+function projectsReport(projects: Array<{ project: string; results: Array<Record<string, unknown>> }>): string {
+  return JSON.stringify({
+    suites: projects.map(({ project, results }) => ({
+      projectName: project,
+      specs: [{ title: "generated checkout", tests: [{ results }] }]
+    }))
   });
 }

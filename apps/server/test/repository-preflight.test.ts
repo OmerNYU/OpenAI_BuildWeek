@@ -170,7 +170,7 @@ describe("repository preflight", () => {
       next: { requiredDependencies: ["next", "react", "react-dom"], devScript: "next dev" },
       vite: { requiredDependencies: ["react", "react-dom", "vite"], devScript: "vite" }
     });
-    expect(approvedGeneratedTestScript).toBe("playwright test tests/generated");
+    expect(approvedGeneratedTestScript).toBe("playwright test tests/generated/failspec.generated.spec.ts");
   });
 
   it("bounds Git inspection, canonicalizes Git roots, and classifies first status output", async () => {

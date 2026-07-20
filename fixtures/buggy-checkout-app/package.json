@@ -10,7 +10,7 @@
     "build": "next build",
     "start": "next start",
     "test:reference": "playwright test tests/reference",
-    "test:generated": "playwright test tests/generated"
+    "test:generated": "playwright test tests/generated/failspec.generated.spec.ts"
   },
   "dependencies": {
     "next": "15.5.20",
