@@ -46,6 +46,35 @@ describe("investigationSchema", () => {
       }).success
     ).toBe(true);
   });
+
+  it("persists execution evidence separately while keeping it optional", () => {
+    const result = investigationSchema.parse({
+      id: "investigation-2",
+      status: "execution_error",
+      request: {
+        repositoryPath: "C:/repos/example",
+        bugTitle: "Checkout fails",
+        bugDescription: "Checkout does not complete.",
+        expectedBehavior: "Checkout completes.",
+        actualBehavior: "Checkout remains open."
+      },
+      timeline: [
+        { status: "created", at: "2026-07-19T00:00:00.000Z", message: "Investigation created." },
+        { status: "execution_error", at: "2026-07-19T00:01:00.000Z", message: "Execution evidence collected." }
+      ],
+      createdAt: "2026-07-19T00:00:00.000Z",
+      updatedAt: "2026-07-19T00:01:00.000Z",
+      executionEvidence: {
+        testStatus: "failed",
+        assertionFailureMessage: "Expected confirmation page.",
+        consoleErrors: [],
+        pageErrors: [],
+        artifactPaths: [".failspec/runner/artifacts/trace.zip"]
+      }
+    });
+
+    expect(result.executionEvidence?.testStatus).toBe("failed");
+  });
 });
 
 describe("Codex analysis contracts", () => {

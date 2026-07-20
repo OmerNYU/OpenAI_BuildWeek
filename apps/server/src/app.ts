@@ -1,7 +1,11 @@
 import express, { type ErrorRequestHandler } from "express";
 import type { CodexAdapter, RunnerAdapter } from "@failspec/core";
 import { createInvestigationsRouter } from "./routes/investigations.js";
-import { InvestigationService } from "./services/investigation-service.js";
+import {
+  InvestigationService,
+  type GeneratedTestStager,
+  type InvestigationRuntimeMode
+} from "./services/investigation-service.js";
 import type { RepositoryWorkspace } from "./repository/repository-workspace.js";
 import type { WorkflowScheduler } from "./scheduling/workflow-scheduler.js";
 import type { InvestigationStore } from "./storage/investigation-store.js";
@@ -12,6 +16,8 @@ export interface AppDependencies {
   runnerAdapter: RunnerAdapter;
   scheduler: WorkflowScheduler;
   repositoryWorkspace: RepositoryWorkspace;
+  generatedTestStager: GeneratedTestStager;
+  mode: InvestigationRuntimeMode;
 }
 
 export function createApp(dependencies: AppDependencies) {
@@ -21,7 +27,9 @@ export function createApp(dependencies: AppDependencies) {
     dependencies.codexAdapter,
     dependencies.runnerAdapter,
     dependencies.scheduler,
-    dependencies.repositoryWorkspace
+    dependencies.repositoryWorkspace,
+    dependencies.generatedTestStager,
+    dependencies.mode
   );
 
   app.use(express.json());

@@ -3,11 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MockCodexAdapter } from "@failspec/core";
-import { createApp } from "../src/app.js";
+import { MockCodexAdapter, MockRunnerAdapter } from "@failspec/core";
+import { createApp, type AppDependencies } from "../src/app.js";
 import { CodexInvestigationAdapter } from "../src/codex/adapter.js";
 import type { CodexCliExecutor } from "../src/codex/client.js";
 import { createRuntimeDependencies } from "../src/runtime-dependencies.js";
+import { PlaywrightRunnerAdapter } from "../src/runner/playwright-runner.js";
+import { stageGeneratedTest } from "../src/runner/staging.js";
 import {
   InProcessWorkflowScheduler,
   type WorkflowScheduler
@@ -16,6 +18,7 @@ import {
   LocalRepositoryWorkspace,
   PassThroughRepositoryWorkspace
 } from "../src/repository/repository-workspace.js";
+import type { GeneratedTestStager } from "../src/services/investigation-service.js";
 
 const requestBody = {
   repositoryPath: "C:/repos/checkout-app",
@@ -54,18 +57,25 @@ describe("runtime dependency construction", () => {
     const dependencies = createRuntimeDependencies({ investigationDirectory: storageDirectory });
 
     expect(dependencies.codexAdapter).toBeInstanceOf(MockCodexAdapter);
+    expect(dependencies.runnerAdapter).toBeInstanceOf(MockRunnerAdapter);
     expect(dependencies.scheduler).toBeInstanceOf(InProcessWorkflowScheduler);
     expect(dependencies.repositoryWorkspace).toBeInstanceOf(PassThroughRepositoryWorkspace);
+    expect(dependencies.mode).toBe("mock");
   });
 
-  it("selects the deterministic mock adapter for explicit mock mode", () => {
+  it("selects the deterministic mock adapter for explicit mock mode", async () => {
     const dependencies = createRuntimeDependencies({
       env: { FAILSPEC_CODEX_MODE: "mock" },
       investigationDirectory: storageDirectory
     });
 
     expect(dependencies.codexAdapter).toBeInstanceOf(MockCodexAdapter);
+    expect(dependencies.runnerAdapter).toBeInstanceOf(MockRunnerAdapter);
     expect(dependencies.repositoryWorkspace).toBeInstanceOf(PassThroughRepositoryWorkspace);
+    await expect(dependencies.generatedTestStager("not-a-worktree", "mock test")).resolves.toEqual({
+      status: "staged",
+      stagedTestPath: "tests/failspec.mock.spec.ts"
+    });
   });
 
   it("constructs the real adapter for local mode with an injected executor", () => {
@@ -76,7 +86,10 @@ describe("runtime dependency construction", () => {
     });
 
     expect(dependencies.codexAdapter).toBeInstanceOf(CodexInvestigationAdapter);
+    expect(dependencies.runnerAdapter).toBeInstanceOf(PlaywrightRunnerAdapter);
+    expect(dependencies.generatedTestStager).toBe(stageGeneratedTest);
     expect(dependencies.repositoryWorkspace).toBeInstanceOf(LocalRepositoryWorkspace);
+    expect(dependencies.mode).toBe("local");
   });
 
   it("rejects unsupported modes during dependency construction", () => {
@@ -125,7 +138,11 @@ describe("runtime dependency construction", () => {
         investigationDirectory: storageDirectory,
         repositoryWorkspace: new PassThroughRepositoryWorkspace()
       },
-      scheduler
+      scheduler,
+      {
+        generatedTestStager: passThroughGeneratedTestStager,
+        runnerAdapter: new MockRunnerAdapter()
+      }
     );
 
     const response = await request(app).post("/api/investigations").send(requestBody);
@@ -136,7 +153,7 @@ describe("runtime dependency construction", () => {
 
     await scheduler.runAll();
     const completed = await request(app).get(`/api/investigations/${response.body.id}`);
-    expect(completed.body.status).toBe("verified");
+    expect(completed.body.status).toBe("execution_error");
     expect(completed.body.hypothesis).toEqual(hypothesis);
     expect(completed.body.analysisEvidence).toEqual([
       {
@@ -145,6 +162,8 @@ describe("runtime dependency construction", () => {
       }
     ]);
     expect(completed.body.generatedTestContent).toBe(generatedTestContent);
+    expect(completed.body.generatedTestPath).toBe("tests/generated/failspec.generated.spec.ts");
+    expect(completed.body.executionEvidence).toMatchObject({ testStatus: "passed" });
     expect(executor.execute).toHaveBeenCalledTimes(2);
     const [analysisCall, generationCall] = executor.execute.mock.calls;
     expect(analysisCall?.[0]).toMatchObject({ cwd: requestBody.repositoryPath });
@@ -152,16 +171,17 @@ describe("runtime dependency construction", () => {
     expect(analysisCall?.[0].prompt).toContain(requestBody.bugTitle);
     expect(generationCall?.[0].prompt).toContain(requestBody.bugTitle);
     expect(generationCall?.[0].prompt).not.toBe(analysisCall?.[0].prompt);
-    expect(completed.body.verdictExplanation).toContain("deterministic mock runner");
+    expect(completed.body.verdictExplanation).toContain("Execution evidence was collected");
     expect(completed.body.timeline.at(-1)).toMatchObject({
-      status: "verified",
-      message: "Mock reproduction verified."
+      status: "execution_error",
+      message: "Execution evidence was collected, but verification is unavailable."
     });
 
     const reloaded = await request(app).get(`/api/investigations/${response.body.id}`);
     expect(reloaded.status).toBe(200);
     expect(reloaded.body.hypothesis).toEqual(hypothesis);
     expect(reloaded.body.generatedTestContent).toBe(generatedTestContent);
+    expect(reloaded.body.executionEvidence).toMatchObject({ testStatus: "passed" });
   });
 
   it("converts local analysis failure to a sanitized execution error", async () => {
@@ -220,10 +240,20 @@ describe("runtime dependency construction", () => {
 
 function createRuntimeApp(
   options: Parameters<typeof createRuntimeDependencies>[0],
-  scheduler: WorkflowScheduler
+  scheduler: WorkflowScheduler,
+  overrides: Partial<AppDependencies> = {}
 ) {
-  return createApp({ ...createRuntimeDependencies(options), scheduler });
+  return createApp({ ...createRuntimeDependencies(options), ...overrides, scheduler });
 }
+
+const passThroughGeneratedTestStager: GeneratedTestStager = async (
+  workspacePath: string,
+  content: string
+) => {
+  void workspacePath;
+  void content;
+  return { status: "staged" as const, stagedTestPath: "tests/generated/failspec.generated.spec.ts" };
+};
 
 class ManualWorkflowScheduler implements WorkflowScheduler {
   private readonly tasks: Array<() => Promise<void>> = [];

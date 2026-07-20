@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { MockCodexAdapter, MockRunnerAdapter, type CodexAdapter } from "@failspec/core";
+import { MockCodexAdapter, MockRunnerAdapter, type CodexAdapter, type RunnerAdapter } from "@failspec/core";
 import type { AppDependencies } from "./app.js";
 import { CodexInvestigationAdapter } from "./codex/adapter.js";
 import { CodexJsonlClient, type CodexCliExecutor } from "./codex/client.js";
@@ -11,9 +11,15 @@ import {
   PassThroughRepositoryWorkspace,
   type RepositoryWorkspace
 } from "./repository/repository-workspace.js";
+import { PlaywrightRunnerAdapter } from "./runner/playwright-runner.js";
+import { stageGeneratedTest } from "./runner/staging.js";
+import type {
+  GeneratedTestStager,
+  InvestigationRuntimeMode
+} from "./services/investigation-service.js";
 import { JsonInvestigationStore } from "./storage/json-investigation-store.js";
 
-export type CodexMode = "mock" | "local";
+export type CodexMode = InvestigationRuntimeMode;
 
 export interface RuntimeDependencyOptions {
   env?: NodeJS.ProcessEnv;
@@ -29,14 +35,33 @@ export function createRuntimeDependencies(
   const codexAdapter = createCodexAdapter(mode, options.codexCliExecutor);
 
   return {
+    mode,
     store: new JsonInvestigationStore(
       options.investigationDirectory ?? defaultInvestigationDirectory()
     ),
     codexAdapter,
-    runnerAdapter: new MockRunnerAdapter(),
+    runnerAdapter: createRunnerAdapter(mode),
+    generatedTestStager: createGeneratedTestStager(mode),
     scheduler: new InProcessWorkflowScheduler(),
     repositoryWorkspace: options.repositoryWorkspace ?? createRepositoryWorkspace(mode)
   };
+}
+
+function createRunnerAdapter(mode: CodexMode): RunnerAdapter {
+  return mode === "local" ? new PlaywrightRunnerAdapter() : new MockRunnerAdapter();
+}
+
+function createGeneratedTestStager(mode: CodexMode): GeneratedTestStager {
+  return mode === "local" ? stageGeneratedTest : stageMockGeneratedTest;
+}
+
+async function stageMockGeneratedTest(
+  worktreePath: string,
+  content: string
+) {
+  void worktreePath;
+  void content;
+  return { status: "staged" as const, stagedTestPath: "tests/failspec.mock.spec.ts" };
 }
 
 function createRepositoryWorkspace(mode: CodexMode): RepositoryWorkspace {
