@@ -168,6 +168,50 @@ export async function createCommandPolicy(
   };
 }
 
+/**
+ * Revalidates the command surface after FailSpec has staged its fixed test.
+ * The isolated worktree is intentionally dirty at this point, so this omits
+ * only the source-repository clean-Git check performed by preflightRepository.
+ */
+export async function createRunnerCommandPolicy(
+  worktreePath: string,
+  options: PreflightOptions = {}
+): Promise<RepositoryCommandPolicyResult> {
+  const repositoryPath = await canonicalDirectory(worktreePath);
+  if (!repositoryPath) {
+    return failed("unsafe_path");
+  }
+  const gitRoot = await (options.gitRunner ?? systemGitRunner).run(repositoryPath, ["rev-parse", "--show-toplevel"], {
+    timeoutMs: gitTimeoutMs,
+    maxOutputBytes: gitRevParseOutputLimit,
+    stopOnOutput: false
+  });
+  if (gitRoot.kind !== "completed") {
+    return failed("inspection_failed");
+  }
+  if (gitRoot.exitCode !== 0 || await canonicalGitDirectory(gitRoot.output) !== repositoryPath) {
+    return unsupported("not_git_repository");
+  }
+  const packageJson = await readPackageJson(repositoryPath);
+  const framework = packageJson && detectFramework(packageJson);
+  if (!packageJson || !framework) {
+    return failed("inspection_failed");
+  }
+  if (!(await isNpmRepository(packageJson, repositoryPath))) {
+    return unsupported("unsupported_package_manager");
+  }
+  if (!(await hasPlaywrightSetup(repositoryPath, packageJson))) {
+    return unsupported("playwright_not_configured");
+  }
+  if (!hasApprovedScripts(packageJson)) {
+    return unsupported("unsupported_script");
+  }
+  return {
+    status: "ready",
+    policy: { repositoryPath, framework, startScript: "dev", testScript: "test:generated" }
+  };
+}
+
 export function buildInstallCommand(): NpmCommand {
   return { command: "npm", args: ["ci"] };
 }

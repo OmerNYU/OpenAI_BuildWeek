@@ -53,6 +53,6 @@ The generated content must be valid TypeScript, import Playwright's `test`, decl
 
 ## Handoff and verdict
 
-The orchestrator moves the investigation from `hypothesis_ready` to `generating_test` and then `test_ready`. The runner boundary receives the isolated worktree path, but the currently injected runner is deterministic and mocked. Generated-test staging and real Playwright execution are not implemented. Execution evidence and evidence-based verdict classification remain deferred. A cleanup failure prevents successful verification. Analysis evidence remains separate and cannot establish reproduction; a test failure or non-zero command alone is not proof of reproduction.
+The orchestrator moves the investigation from `hypothesis_ready` to `generating_test` and then `test_ready`. Generated-test staging and controlled Playwright execution are available as Person 3 boundaries, while the currently injected runner remains deterministic and mocked until orchestration integration. Execution evidence persistence and evidence-based verdict classification remain deferred. A cleanup failure prevents successful verification. Analysis evidence remains separate and cannot establish reproduction; a test failure or non-zero command alone is not proof of reproduction.
 
 The supported verdicts are verified reproduction, partial reproduction, not reproduced, and execution error.
