@@ -24,6 +24,7 @@ export interface CodexAdapter {
 export interface RunnerInput {
   repositoryPath: string;
   generatedTest: GeneratedTest;
+  signal?: AbortSignal;
 }
 
 export interface RunnerAdapter {

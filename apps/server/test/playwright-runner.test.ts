@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PlaywrightRunnerAdapter,
+  terminateProcessTree,
   waitForReady,
   type CommandResult,
   type RunnerOperations
@@ -67,6 +68,20 @@ describe("controlled Playwright runner", () => {
     });
   });
 
+  it("does not launch a process for an already-aborted execution", async () => {
+    const worktree = await createWorktree();
+    const controller = new AbortController();
+    controller.abort();
+    const operations = fakeOperations(report("passed"));
+
+    const output = await new PlaywrightRunnerAdapter(operations).run(input(worktree, controller.signal));
+
+    expect(operations.createPolicy).not.toHaveBeenCalled();
+    expect(operations.run).not.toHaveBeenCalled();
+    expect(operations.start).not.toHaveBeenCalled();
+    expect(output).toMatchObject({ execution: { timedOut: false, exitCode: null }, evidence: { testStatus: "interrupted" } });
+  });
+
   it("requires staged content to match the generated-test handoff", async () => {
     const worktree = await createWorktree();
     const operations = fakeOperations(report("passed"));
@@ -95,6 +110,23 @@ describe("controlled Playwright runner", () => {
     expect(operations.run).toHaveBeenNthCalledWith(1, { command: "npm", args: ["ci"] }, expect.any(Object));
     expect(operations.appendInstallLog).toHaveBeenCalledTimes(1);
     expect(operations.recordInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns interrupted facts and starts no server when dependency installation is cancelled", async () => {
+    const worktree = await createWorktree();
+    const controller = new AbortController();
+    const operations = fakeOperations(report("passed"));
+    operations.planInstall = vi.fn(async () => ({ kind: "install" as const, command: { command: "npm" as const, args: ["ci"] }, logPath: ".failspec/npm-install.log" }));
+    operations.run = vi.fn(async () => {
+      controller.abort();
+      return { exitCode: null, stdout: "", stderr: "", timedOut: false, interrupted: true, durationMs: 10 };
+    });
+
+    const output = await new PlaywrightRunnerAdapter(operations).run(input(worktree, controller.signal));
+
+    expect(operations.run).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ signal: controller.signal }));
+    expect(operations.start).not.toHaveBeenCalled();
+    expect(output.evidence.testStatus).toBe("interrupted");
   });
 
   it("normalizes contained reporter facts and drops escaping artifacts", async () => {
@@ -153,6 +185,42 @@ describe("controlled Playwright runner", () => {
     expect(operations.stop).toHaveBeenCalledTimes(1);
   });
 
+  it("returns interrupted facts and stops the managed server when readiness is cancelled", async () => {
+    const worktree = await createWorktree();
+    const controller = new AbortController();
+    const operations = fakeOperations(report("passed"));
+    operations.waitForReady = vi.fn(async (_url, signal) => {
+      expect(signal).toBe(controller.signal);
+      controller.abort();
+      return false;
+    });
+
+    const output = await new PlaywrightRunnerAdapter(operations).run(input(worktree, controller.signal));
+
+    expect(operations.run).not.toHaveBeenCalled();
+    expect(operations.stop).toHaveBeenCalledTimes(1);
+    expect(output.evidence.testStatus).toBe("interrupted");
+  });
+
+  it("returns interrupted facts and stops the managed server when Playwright is cancelled", async () => {
+    const worktree = await createWorktree();
+    const controller = new AbortController();
+    const operations = fakeOperations(report("passed"));
+    operations.run = vi.fn(async (command, options) => {
+      if (command.args.includes("test:generated")) {
+        expect(options.signal).toBe(controller.signal);
+        controller.abort();
+        return { exitCode: null, stdout: "", stderr: "", timedOut: false, interrupted: true, durationMs: 10 };
+      }
+      return { exitCode: 0, stdout: "", stderr: "", timedOut: false, durationMs: 10 };
+    });
+
+    const output = await new PlaywrightRunnerAdapter(operations).run(input(worktree, controller.signal));
+
+    expect(operations.stop).toHaveBeenCalledTimes(1);
+    expect(output).toMatchObject({ execution: { timedOut: false, exitCode: null }, evidence: { testStatus: "interrupted" } });
+  });
+
   it("fails closed when the JSON reporter is malformed", async () => {
     const worktree = await createWorktree();
     const output = await new PlaywrightRunnerAdapter(fakeOperations("not json")).run(input(worktree));
@@ -202,6 +270,30 @@ describe("controlled Playwright runner", () => {
     }
   });
 
+  it("does not probe readiness after cancellation", async () => {
+    const controller = new AbortController();
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    controller.abort();
+    try {
+      await expect(waitForReady("http://127.0.0.1:43123", controller.signal)).resolves.toBe(false);
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("terminates an owned POSIX process group and uses Windows taskkill for its complete tree", async () => {
+    const kill = vi.fn();
+    const taskkill = vi.fn(async () => undefined);
+    await terminateProcessTree(123, { platform: "linux", kill, taskkill });
+    expect(kill).toHaveBeenCalledWith(-123, "SIGKILL");
+    expect(taskkill).not.toHaveBeenCalled();
+
+    await terminateProcessTree(456, { platform: "win32", kill, taskkill });
+    expect(taskkill).toHaveBeenCalledWith(456);
+  });
+
   it("removes absolute paths and external URLs without obscuring loopback URLs", async () => {
     const worktree = await createWorktree();
     const output = await new PlaywrightRunnerAdapter(fakeOperations(projectsReport([{
@@ -241,8 +333,8 @@ async function createWorktree(): Promise<string> {
   return worktree;
 }
 
-function input(worktree: string) {
-  return { repositoryPath: worktree, generatedTest: { path: stagedGeneratedTestPath, content: "staged" } };
+function input(worktree: string, signal?: AbortSignal) {
+  return { repositoryPath: worktree, generatedTest: { path: stagedGeneratedTestPath, content: "staged" }, signal };
 }
 
 function fakeOperations(reporter: string, result: Partial<CommandResult> = {}): RunnerOperations & { stop: ReturnType<typeof vi.fn> } {

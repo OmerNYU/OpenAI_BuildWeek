@@ -29,7 +29,14 @@ export interface CommandResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  interrupted?: boolean;
   durationMs: number;
+}
+
+export interface ProcessTreeOperations {
+  platform: NodeJS.Platform;
+  kill(pid: number, signal: NodeJS.Signals): void;
+  taskkill(pid: number): Promise<void>;
 }
 
 export interface RunningCommand {
@@ -43,7 +50,7 @@ export interface RunnerOperations {
   appendInstallLog: typeof appendDependencyInstallLog;
   recordInstall: typeof recordDependencyInstall;
   allocatePort(): Promise<number>;
-  waitForReady(url: string): Promise<boolean>;
+  waitForReady(url: string, signal?: AbortSignal): Promise<boolean>;
   run(command: NpmCommand, options: CommandOptions): Promise<CommandResult>;
   start(command: NpmCommand, options: CommandOptions): Promise<RunningCommand>;
 }
@@ -53,7 +60,14 @@ interface CommandOptions {
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
   logPath?: string;
+  signal?: AbortSignal;
 }
+
+const defaultProcessTreeOperations: ProcessTreeOperations = {
+  platform: process.platform,
+  kill: (pid, signal) => process.kill(pid, signal),
+  taskkill
+};
 
 const defaultOperations: RunnerOperations = {
   createPolicy: createRunnerCommandPolicy,
@@ -72,6 +86,9 @@ export class PlaywrightRunnerAdapter implements RunnerAdapter {
   async run(input: RunnerInput): Promise<RunnerOutput> {
     const startedAt = Date.now();
     try {
+      if (isAborted(input.signal)) {
+        return interruptedOutput(startedAt);
+      }
       return await this.execute(input, startedAt);
     } catch {
       return unavailableOutput(startedAt);
@@ -79,22 +96,37 @@ export class PlaywrightRunnerAdapter implements RunnerAdapter {
   }
 
   private async execute(input: RunnerInput, startedAt: number): Promise<RunnerOutput> {
+    if (isAborted(input.signal)) {
+      return interruptedOutput(startedAt);
+    }
     const worktreePath = await stagedTestWorktree(input.repositoryPath, input.generatedTest.path, input.generatedTest.content);
+    if (isAborted(input.signal)) {
+      return interruptedOutput(startedAt);
+    }
     if (!worktreePath) {
       return unavailableOutput(startedAt);
     }
 
     const policyResult = await this.operations.createPolicy(worktreePath);
+    if (isAborted(input.signal)) {
+      return interruptedOutput(startedAt);
+    }
     if (policyResult.status !== "ready") {
       return unavailableOutput(startedAt);
     }
     const output = await runnerPaths(worktreePath);
+    if (isAborted(input.signal)) {
+      return interruptedOutput(startedAt);
+    }
     if (!output || !(await outputFilesAreAbsent(output))) {
       return unavailableOutput(startedAt);
     }
 
     const environment = runnerEnvironment();
     const install = await this.operations.planInstall(worktreePath);
+    if (isAborted(input.signal)) {
+      return interruptedOutput(startedAt);
+    }
     if (install.kind === "unavailable") {
       return unavailableOutput(startedAt);
     }
@@ -102,15 +134,28 @@ export class PlaywrightRunnerAdapter implements RunnerAdapter {
       const result = await this.operations.run(install.command, {
         cwd: worktreePath,
         env: environment,
-        timeoutMs: testTimeoutMs
+        timeoutMs: testTimeoutMs,
+        signal: input.signal
       });
       await this.operations.appendInstallLog(worktreePath, `${result.stdout}${result.stderr}`);
-      if (result.exitCode !== 0 || result.timedOut || (await this.operations.recordInstall(worktreePath)).kind === "unavailable") {
+      if (result.interrupted || isAborted(input.signal)) {
+        return interruptedOutput(startedAt);
+      }
+      if (result.timedOut) {
+        return timedOutOutput(startedAt);
+      }
+      if (result.exitCode !== 0 || (await this.operations.recordInstall(worktreePath)).kind === "unavailable") {
         return unavailableOutput(startedAt);
       }
     }
 
+    if (isAborted(input.signal)) {
+      return interruptedOutput(startedAt);
+    }
     const port = await this.operations.allocatePort().catch(() => undefined);
+    if (isAborted(input.signal)) {
+      return interruptedOutput(startedAt);
+    }
     if (!port) {
       return unavailableOutput(startedAt);
     }
@@ -119,14 +164,25 @@ export class PlaywrightRunnerAdapter implements RunnerAdapter {
       cwd: worktreePath,
       env: { ...environment, FAILSPEC_BASE_URL: baseUrl, FAILSPEC_MANAGED_SERVER: "1" },
       timeoutMs: startupTimeoutMs,
-      logPath: output.serverLog
+      logPath: output.serverLog,
+      signal: input.signal
     }).catch(() => undefined);
     if (!server) {
       return unavailableOutput(startedAt);
     }
 
     try {
-      if (!server.isRunning() || !(await this.operations.waitForReady(baseUrl)) || !server.isRunning()) {
+      if (!server.isRunning()) {
+        return unavailableOutput(startedAt);
+      }
+      const ready = await this.operations.waitForReady(baseUrl, input.signal);
+      if (isAborted(input.signal)) {
+        return interruptedOutput(startedAt);
+      }
+      if (!ready) {
+        return timedOutOutput(startedAt);
+      }
+      if (!server.isRunning()) {
         return unavailableOutput(startedAt);
       }
       const result = await this.operations.run(testCommand(policyResult.policy, output.artifactsPath), {
@@ -137,9 +193,10 @@ export class PlaywrightRunnerAdapter implements RunnerAdapter {
           FAILSPEC_MANAGED_SERVER: "1",
           PLAYWRIGHT_JSON_OUTPUT_FILE: output.reportPath
         },
-        timeoutMs: testTimeoutMs
+        timeoutMs: testTimeoutMs,
+        signal: input.signal
       });
-      const report = result.timedOut ? undefined : await readOwnedOutput(output.reportPath);
+      const report = result.timedOut || result.interrupted ? undefined : await readOwnedOutput(output.reportPath);
       await writeOwnedOutput(output.stderrLog, result.stderr);
       return outputFromResult(result, report, worktreePath, output.artifactsPath);
     } finally {
@@ -251,18 +308,48 @@ async function readOwnedOutput(path: string): Promise<string | undefined> {
 }
 
 async function outputFromResult(result: CommandResult, report: string | undefined, worktreePath: string, artifactsPath: string): Promise<RunnerOutput> {
-  const evidence = result.timedOut ? emptyEvidence("timedOut") : report === undefined ? emptyEvidence("unknown") : await parseEvidence(report, worktreePath, artifactsPath);
+  const evidence = result.timedOut ? emptyEvidence("timedOut") : result.interrupted ? emptyEvidence("interrupted") : report === undefined ? emptyEvidence("unknown") : await parseEvidence(report, worktreePath, artifactsPath);
   return {
     execution: {
       command: "controlled_playwright_generated_test",
       exitCode: result.exitCode,
       timedOut: result.timedOut,
-      stdout: result.timedOut ? "Playwright execution timed out." : "Playwright execution completed.",
+      stdout: result.timedOut ? "Playwright execution timed out." : result.interrupted ? "Playwright execution was interrupted." : "Playwright execution completed.",
       stderr: "",
       durationMs: result.durationMs,
       artifacts: evidence.artifactPaths
     },
     evidence
+  };
+}
+
+function interruptedOutput(startedAt: number): RunnerOutput {
+  return {
+    execution: {
+      command: "controlled_playwright_generated_test",
+      exitCode: null,
+      timedOut: false,
+      stdout: "Playwright execution was interrupted.",
+      stderr: "",
+      durationMs: Date.now() - startedAt,
+      artifacts: []
+    },
+    evidence: emptyEvidence("interrupted")
+  };
+}
+
+function timedOutOutput(startedAt: number): RunnerOutput {
+  return {
+    execution: {
+      command: "controlled_playwright_generated_test",
+      exitCode: null,
+      timedOut: true,
+      stdout: "Playwright execution timed out.",
+      stderr: "",
+      durationMs: Date.now() - startedAt,
+      artifacts: []
+    },
+    evidence: emptyEvidence("timedOut")
   };
 }
 
@@ -458,18 +545,21 @@ async function allocatePort(): Promise<number> {
   return typeof address === "object" && address ? address.port : Promise.reject(new Error("Port unavailable."));
 }
 
-export async function waitForReady(url: string): Promise<boolean> {
+export async function waitForReady(url: string, signal?: AbortSignal): Promise<boolean> {
   const deadline = Date.now() + startupTimeoutMs;
-  while (Date.now() < deadline) {
+  while (!isAborted(signal) && Date.now() < deadline) {
     try {
-      const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(readinessIntervalMs) });
+      const response = await fetch(url, {
+        redirect: "error",
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(readinessIntervalMs)]) : AbortSignal.timeout(readinessIntervalMs)
+      });
       if (response.ok) {
         return true;
       }
     } catch {
       // The controlled server is still starting.
     }
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, readinessIntervalMs));
+    await wait(readinessIntervalMs, signal);
   }
   return false;
 }
@@ -477,25 +567,44 @@ export async function waitForReady(url: string): Promise<boolean> {
 function runCommand(command: NpmCommand, options: CommandOptions): Promise<CommandResult> {
   return new Promise((resolvePromise) => {
     const startedAt = Date.now();
-    const child = spawn(command.command, command.args, { cwd: options.cwd, env: options.env, shell: false, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command.command, command.args, { cwd: options.cwd, detached: process.platform !== "win32", env: options.env, shell: false, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let interrupted = false;
     let settled = false;
+    let stopping: Promise<void> | undefined;
     const append = (current: string, chunk: Buffer) => current.length >= maximumProcessOutputBytes ? current : `${current}${chunk.toString("utf8")}`.slice(0, maximumProcessOutputBytes);
+    const stop = () => stopping ??= terminateProcessTree(child.pid);
     const timeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
       timedOut = true;
-      child.kill();
+      void stop();
     }, options.timeoutMs);
+    const abort = () => {
+      if (settled) {
+        return;
+      }
+      interrupted = true;
+      void stop();
+    };
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (isAborted(options.signal)) {
+      abort();
+    }
     child.stdout?.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
     child.stderr?.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
-    const settle = (code: number | null) => {
+    const settle = async (code: number | null) => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timeout);
-      resolvePromise({ exitCode: code, stdout, stderr, timedOut, durationMs: Date.now() - startedAt });
+      options.signal?.removeEventListener("abort", abort);
+      await stopping;
+      resolvePromise({ exitCode: code, stdout, stderr, timedOut, interrupted, durationMs: Date.now() - startedAt });
     };
     child.once("error", () => settle(null));
     child.once("close", settle);
@@ -503,7 +612,7 @@ function runCommand(command: NpmCommand, options: CommandOptions): Promise<Comma
 }
 
 async function startCommand(command: NpmCommand, options: CommandOptions): Promise<RunningCommand> {
-  const child = spawn(command.command, command.args, { cwd: options.cwd, env: options.env, shell: false, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(command.command, command.args, { cwd: options.cwd, detached: process.platform !== "win32", env: options.env, shell: false, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   let closed = false;
   const closedPromise = new Promise<void>((resolvePromise) => {
@@ -522,8 +631,8 @@ async function startCommand(command: NpmCommand, options: CommandOptions): Promi
       return !closed;
     },
     async stop() {
-      if (!child.killed) {
-        child.kill();
+      if (!closed) {
+        await terminateProcessTree(child.pid);
       }
       if (!closed) {
         await closedPromise;
@@ -533,4 +642,56 @@ async function startCommand(command: NpmCommand, options: CommandOptions): Promi
       }
     }
   };
+}
+
+export async function terminateProcessTree(pid: number | undefined, operations: ProcessTreeOperations = defaultProcessTreeOperations): Promise<void> {
+  if (!pid) {
+    return;
+  }
+  if (operations.platform === "win32") {
+    await operations.taskkill(pid).catch(() => undefined);
+    return;
+  }
+  try {
+    operations.kill(-pid, "SIGKILL");
+  } catch {
+    try {
+      operations.kill(pid, "SIGKILL");
+    } catch {
+      // The owned process has already exited.
+    }
+  }
+}
+
+function isAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
+async function wait(milliseconds: number, signal: AbortSignal | undefined): Promise<void> {
+  if (!signal) {
+    await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, milliseconds));
+    return;
+  }
+  if (isAborted(signal)) {
+    return;
+  }
+  const abortSignal = signal;
+  await new Promise<void>((resolvePromise) => {
+    const timer = setTimeout(done, milliseconds);
+    const abort = () => done();
+    function done() {
+      clearTimeout(timer);
+      abortSignal.removeEventListener("abort", abort);
+      resolvePromise();
+    }
+    abortSignal.addEventListener("abort", abort, { once: true });
+  });
+}
+
+function taskkill(pid: number): Promise<void> {
+  return new Promise((resolvePromise) => {
+    const child = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { shell: false, stdio: "ignore", windowsHide: true });
+    child.once("error", resolvePromise);
+    child.once("close", resolvePromise);
+  });
 }
