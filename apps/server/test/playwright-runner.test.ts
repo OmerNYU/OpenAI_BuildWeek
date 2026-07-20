@@ -232,6 +232,52 @@ describe("controlled Playwright runner", () => {
     expect(output.evidence.testStatus).toBe("interrupted");
   });
 
+  it("preserves interrupted facts when managed-server cleanup fails during readiness cancellation", async () => {
+    const worktree = await createWorktree();
+    const controller = new AbortController();
+    const operations = fakeOperations(report("passed"));
+    operations.waitForReady = vi.fn(async () => {
+      controller.abort();
+      return false;
+    });
+    operations.stop = vi.fn(async () => { throw new Error("cleanup failed"); });
+    operations.start = vi.fn(async () => ({ isRunning: () => true, stop: operations.stop }));
+
+    await expect(new PlaywrightRunnerAdapter(operations).run(input(worktree, controller.signal))).resolves.toMatchObject({
+      execution: { timedOut: false }, evidence: { testStatus: "interrupted" }
+    });
+  });
+
+  it("preserves timeout facts when managed-server cleanup fails", async () => {
+    const readinessWorktree = await createWorktree();
+    const readinessOperations = fakeOperations(report("passed"));
+    readinessOperations.waitForReady = vi.fn(async () => false);
+    readinessOperations.stop = vi.fn(async () => { throw new Error("cleanup failed"); });
+    readinessOperations.start = vi.fn(async () => ({ isRunning: () => true, stop: readinessOperations.stop }));
+    await expect(new PlaywrightRunnerAdapter(readinessOperations).run(input(readinessWorktree))).resolves.toMatchObject({
+      execution: { timedOut: true }, evidence: { testStatus: "timedOut" }
+    });
+
+    const testWorktree = await createWorktree();
+    const testOperations = fakeOperations("", { exitCode: null, timedOut: true });
+    testOperations.stop = vi.fn(async () => { throw new Error("cleanup failed"); });
+    testOperations.start = vi.fn(async () => ({ isRunning: () => true, stop: testOperations.stop }));
+    await expect(new PlaywrightRunnerAdapter(testOperations).run(input(testWorktree))).resolves.toMatchObject({
+      execution: { timedOut: true }, evidence: { testStatus: "timedOut" }
+    });
+  });
+
+  it("fails closed when managed-server cleanup fails after normal execution", async () => {
+    const worktree = await createWorktree();
+    const operations = fakeOperations(report("passed"));
+    operations.stop = vi.fn(async () => { throw new Error("cleanup failed"); });
+    operations.start = vi.fn(async () => ({ isRunning: () => true, stop: operations.stop }));
+
+    await expect(new PlaywrightRunnerAdapter(operations).run(input(worktree))).resolves.toMatchObject({
+      execution: { exitCode: null }, evidence: { testStatus: "unknown" }
+    });
+  });
+
   it("returns unavailable rather than timed out when the managed server exits during readiness", async () => {
     const worktree = await createWorktree();
     const operations = fakeOperations(report("passed"));
@@ -401,6 +447,34 @@ describe("controlled Playwright runner", () => {
     timeoutChild.emit("close", null);
     await expect(timedOut).resolves.toMatchObject({ interrupted: false, timedOut: true });
     expect(timeoutKill).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles a cancelled command when tree cleanup fails and the child never closes", async () => {
+    const root = fakeChild();
+    const taskkillOne = fakeChild();
+    const taskkillTwo = fakeChild();
+    const controller = new AbortController();
+    const operations: ProcessTreeOperations = {
+      platform: "win32",
+      spawn: vi.fn().mockReturnValueOnce(root).mockReturnValueOnce(taskkillOne).mockReturnValueOnce(taskkillTwo) as typeof import("node:child_process").spawn,
+      kill: vi.fn(() => { throw new Error("denied"); }),
+      cleanupTimeoutMs: 1
+    };
+    const result = runCommand({ command: "npm", args: ["run", "test"] }, { cwd: ".", env: {}, timeoutMs: 100, signal: controller.signal }, operations);
+    controller.abort();
+
+    await expect(result).resolves.toMatchObject({ interrupted: true, timedOut: false, cleanupFailed: true, exitCode: null });
+    expect(taskkillOne.kill).toHaveBeenCalledWith("SIGKILL");
+    expect(taskkillTwo.kill).toHaveBeenCalledWith("SIGKILL");
+  });
+
+  it("settles after the post-cleanup grace period when the child never closes", async () => {
+    const child = fakeChild();
+    const controller = new AbortController();
+    const result = runCommand({ command: "npm", args: ["run", "test"] }, { cwd: ".", env: {}, timeoutMs: 100, signal: controller.signal }, processOperations(child, "linux", vi.fn(), 1));
+    controller.abort();
+
+    await expect(result).resolves.toMatchObject({ interrupted: true, timedOut: false, cleanupFailed: true, exitCode: null });
   });
 
   it("cleans the owned server tree even after its direct parent has closed", async () => {

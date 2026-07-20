@@ -175,37 +175,45 @@ export class PlaywrightRunnerAdapter implements RunnerAdapter {
       return isAborted(input.signal) ? interruptedOutput(startedAt) : unavailableOutput(startedAt);
     }
 
+    let outcome: RunnerOutput | undefined;
     try {
       if (!server.isRunning()) {
-        return unavailableOutput(startedAt);
+        outcome = unavailableOutput(startedAt);
+      } else {
+        const ready = await this.operations.waitForReady(baseUrl, input.signal);
+        if (isAborted(input.signal)) {
+          outcome = interruptedOutput(startedAt);
+        } else if (!server.isRunning()) {
+          outcome = unavailableOutput(startedAt);
+        } else if (!ready) {
+          outcome = timedOutOutput(startedAt);
+        } else {
+          const result = await this.operations.run(testCommand(policyResult.policy, output.artifactsPath), {
+            cwd: worktreePath,
+            env: {
+              ...environment,
+              FAILSPEC_BASE_URL: baseUrl,
+              FAILSPEC_MANAGED_SERVER: "1",
+              PLAYWRIGHT_JSON_OUTPUT_FILE: output.reportPath
+            },
+            timeoutMs: testTimeoutMs,
+            signal: input.signal
+          });
+          const report = result.timedOut || result.interrupted ? undefined : await readOwnedOutput(output.reportPath);
+          await writeOwnedOutput(output.stderrLog, result.stderr);
+          outcome = await outputFromResult(result, report, worktreePath, output.artifactsPath);
+        }
       }
-      const ready = await this.operations.waitForReady(baseUrl, input.signal);
-      if (isAborted(input.signal)) {
-        return interruptedOutput(startedAt);
-      }
-      if (!server.isRunning()) {
-        return unavailableOutput(startedAt);
-      }
-      if (!ready) {
-        return timedOutOutput(startedAt);
-      }
-      const result = await this.operations.run(testCommand(policyResult.policy, output.artifactsPath), {
-        cwd: worktreePath,
-        env: {
-          ...environment,
-          FAILSPEC_BASE_URL: baseUrl,
-          FAILSPEC_MANAGED_SERVER: "1",
-          PLAYWRIGHT_JSON_OUTPUT_FILE: output.reportPath
-        },
-        timeoutMs: testTimeoutMs,
-        signal: input.signal
-      });
-      const report = result.timedOut || result.interrupted ? undefined : await readOwnedOutput(output.reportPath);
-      await writeOwnedOutput(output.stderrLog, result.stderr);
-      return outputFromResult(result, report, worktreePath, output.artifactsPath);
     } finally {
-      await server.stop();
+      try {
+        await server.stop();
+      } catch {
+        if (!outcome || (outcome.evidence.testStatus !== "interrupted" && outcome.evidence.testStatus !== "timedOut")) {
+          outcome = unavailableOutput(startedAt);
+        }
+      }
     }
+    return outcome ?? unavailableOutput(startedAt);
   }
 }
 
@@ -580,13 +588,41 @@ export function runCommand(command: NpmCommand, options: CommandOptions, process
     let terminationReason: TerminationReason | undefined;
     let settled = false;
     let stopping: Promise<boolean> | undefined;
+    let cleanupTimer: NodeJS.Timeout | undefined;
     const append = (current: string, chunk: Buffer) => current.length >= maximumProcessOutputBytes ? current : `${current}${chunk.toString("utf8")}`.slice(0, maximumProcessOutputBytes);
+    const settle = async (code: number | null, cleanupFailed = false) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      if (cleanupTimer) {
+        clearTimeout(cleanupTimer);
+      }
+      options.signal?.removeEventListener("abort", abort);
+      child.removeListener("error", onError);
+      child.removeListener("close", onClose);
+      const cleanupSucceeded = stopping ? await stopping : true;
+      if (!cleanupSucceeded || cleanupFailed) {
+        stderr = "Controlled process cleanup failed.";
+      }
+      resolvePromise({ exitCode: code, stdout, stderr, timedOut: terminationReason === "timedOut", interrupted: terminationReason === "interrupted", cleanupFailed: !cleanupSucceeded || cleanupFailed, durationMs: Date.now() - startedAt });
+    };
     const stop = (reason: TerminationReason) => {
       if (terminationReason) {
         return;
       }
       terminationReason = reason;
       stopping = terminateProcessTree(child.pid, processOperations);
+      void stopping.then((cleanupSucceeded) => {
+        if (!cleanupSucceeded) {
+          void settle(null, true);
+          return;
+        }
+        if (!settled) {
+          cleanupTimer = setTimeout(() => void settle(null, true), processOperations.cleanupTimeoutMs);
+        }
+      });
     };
     const timeout = setTimeout(() => {
       if (settled) {
@@ -606,21 +642,10 @@ export function runCommand(command: NpmCommand, options: CommandOptions, process
     }
     child.stdout?.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
     child.stderr?.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
-    const settle = async (code: number | null) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      options.signal?.removeEventListener("abort", abort);
-      const cleanupSucceeded = stopping ? await stopping : true;
-      if (!cleanupSucceeded) {
-        stderr = "Controlled process cleanup failed.";
-      }
-      resolvePromise({ exitCode: code, stdout, stderr, timedOut: terminationReason === "timedOut", interrupted: terminationReason === "interrupted", cleanupFailed: !cleanupSucceeded, durationMs: Date.now() - startedAt });
-    };
-    child.once("error", () => settle(null));
-    child.once("close", settle);
+    function onError() { void settle(null); }
+    function onClose(code: number | null) { void settle(code); }
+    child.once("error", onError);
+    child.once("close", onClose);
   });
 }
 
