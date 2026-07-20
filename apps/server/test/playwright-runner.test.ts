@@ -1,12 +1,17 @@
+import { type ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PlaywrightRunnerAdapter,
+  runCommand,
+  startCommand,
   terminateProcessTree,
   waitForReady,
   type CommandResult,
+  type ProcessTreeOperations,
   type RunnerOperations
 } from "../src/runner/playwright-runner.js";
 import { stagedGeneratedTestPath } from "../src/runner/staging.js";
@@ -80,6 +85,31 @@ describe("controlled Playwright runner", () => {
     expect(operations.run).not.toHaveBeenCalled();
     expect(operations.start).not.toHaveBeenCalled();
     expect(output).toMatchObject({ execution: { timedOut: false, exitCode: null }, evidence: { testStatus: "interrupted" } });
+  });
+
+  it("converts a start-race cancellation into interrupted facts", async () => {
+    const worktree = await createWorktree();
+    const controller = new AbortController();
+    const operations = fakeOperations(report("passed"));
+    operations.start = vi.fn(async () => {
+      controller.abort();
+      throw new Error("start interrupted");
+    });
+
+    const output = await new PlaywrightRunnerAdapter(operations).run(input(worktree, controller.signal));
+
+    expect(output.evidence.testStatus).toBe("interrupted");
+  });
+
+  it("does not spawn from either production helper when already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const child = fakeChild();
+    const operations = processOperations(child, "linux", vi.fn());
+
+    await expect(runCommand({ command: "npm", args: ["run", "test"] }, { cwd: ".", env: {}, timeoutMs: 10, signal: controller.signal }, operations)).resolves.toMatchObject({ interrupted: true });
+    await expect(startCommand({ command: "npm", args: ["run", "dev"] }, { cwd: ".", env: {}, timeoutMs: 10, signal: controller.signal }, operations)).rejects.toThrow("interrupted");
+    expect(operations.spawn).not.toHaveBeenCalled();
   });
 
   it("requires staged content to match the generated-test handoff", async () => {
@@ -202,6 +232,18 @@ describe("controlled Playwright runner", () => {
     expect(output.evidence.testStatus).toBe("interrupted");
   });
 
+  it("returns unavailable rather than timed out when the managed server exits during readiness", async () => {
+    const worktree = await createWorktree();
+    const operations = fakeOperations(report("passed"));
+    const running = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
+    operations.start = vi.fn(async () => ({ isRunning: running, stop: operations.stop }));
+    operations.waitForReady = vi.fn(async () => false);
+
+    const output = await new PlaywrightRunnerAdapter(operations).run(input(worktree));
+
+    expect(output).toMatchObject({ execution: { timedOut: false }, evidence: { testStatus: "unknown" } });
+  });
+
   it("returns interrupted facts and stops the managed server when Playwright is cancelled", async () => {
     const worktree = await createWorktree();
     const controller = new AbortController();
@@ -247,6 +289,26 @@ describe("controlled Playwright runner", () => {
     });
   });
 
+  it("reports failed process-tree cleanup without replacing timeout facts", async () => {
+    const worktree = await createWorktree();
+    const operations = fakeOperations(report("passed"));
+    operations.run = vi.fn(async () => ({
+      exitCode: null,
+      stdout: "",
+      stderr: "",
+      timedOut: true,
+      cleanupFailed: true,
+      durationMs: 10
+    }));
+
+    const output = await new PlaywrightRunnerAdapter(operations).run(input(worktree));
+
+    expect(output).toMatchObject({
+      execution: { timedOut: true, stdout: "Controlled Playwright cleanup failed.", stderr: "Controlled process cleanup failed." },
+      evidence: { testStatus: "timedOut" }
+    });
+  });
+
   it("rejects an unrelated readiness response when the managed child exits from a port collision", async () => {
     const worktree = await createWorktree();
     const operations = fakeOperations(report("passed"));
@@ -285,13 +347,70 @@ describe("controlled Playwright runner", () => {
 
   it("terminates an owned POSIX process group and uses Windows taskkill for its complete tree", async () => {
     const kill = vi.fn();
-    const taskkill = vi.fn(async () => undefined);
-    await terminateProcessTree(123, { platform: "linux", kill, taskkill });
+    const posix = processOperations(fakeChild(), "linux", kill);
+    await terminateProcessTree(123, posix);
     expect(kill).toHaveBeenCalledWith(-123, "SIGKILL");
-    expect(taskkill).not.toHaveBeenCalled();
 
-    await terminateProcessTree(456, { platform: "win32", kill, taskkill });
-    expect(taskkill).toHaveBeenCalledWith(456);
+    const taskkillChild = fakeChild();
+    const windows = processOperations(taskkillChild, "win32", kill);
+    const cleanup = terminateProcessTree(456, windows);
+    taskkillChild.emit("close", 0);
+    await cleanup;
+    expect(windows.spawn).toHaveBeenCalledWith("taskkill", ["/PID", "456", "/T", "/F"], expect.anything());
+    expect(kill).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the immediate Windows child when taskkill fails or times out", async () => {
+    const nonZeroKill = vi.fn();
+    const nonZeroChild = fakeChild();
+    const nonZero = processOperations(nonZeroChild, "win32", nonZeroKill);
+    const nonZeroCleanup = terminateProcessTree(456, nonZero);
+    nonZeroChild.emit("close", 1);
+    await expect(nonZeroCleanup).resolves.toBe(false);
+    expect(nonZeroKill).toHaveBeenCalledWith(456, "SIGKILL");
+
+    const spawnErrorKill = vi.fn();
+    const spawnError: ProcessTreeOperations = { ...processOperations(fakeChild(), "win32", spawnErrorKill), spawn: vi.fn(() => { throw new Error("spawn failed"); }) as typeof import("node:child_process").spawn };
+    await expect(terminateProcessTree(457, spawnError)).resolves.toBe(false);
+    expect(spawnErrorKill).toHaveBeenCalledWith(457, "SIGKILL");
+
+    const timeoutKill = vi.fn();
+    const timeoutChild = fakeChild();
+    await expect(terminateProcessTree(458, processOperations(timeoutChild, "win32", timeoutKill, 1))).resolves.toBe(false);
+    expect(timeoutKill).toHaveBeenCalledWith(458, "SIGKILL");
+    expect(timeoutChild.kill).toHaveBeenCalledWith("SIGKILL");
+  });
+
+  it("latches the first command termination reason and cleans up exactly once", async () => {
+    const child = fakeChild();
+    const kill = vi.fn();
+    const controller = new AbortController();
+    const result = runCommand({ command: "npm", args: ["run", "test"] }, { cwd: ".", env: {}, timeoutMs: 10, signal: controller.signal }, processOperations(child, "linux", kill));
+    controller.abort();
+    await delay(20);
+    child.emit("close", null);
+    await expect(result).resolves.toMatchObject({ interrupted: true, timedOut: false });
+    expect(kill).toHaveBeenCalledTimes(1);
+
+    const timeoutChild = fakeChild();
+    const timeoutKill = vi.fn();
+    const timeoutController = new AbortController();
+    const timedOut = runCommand({ command: "npm", args: ["run", "test"] }, { cwd: ".", env: {}, timeoutMs: 1, signal: timeoutController.signal }, processOperations(timeoutChild, "linux", timeoutKill));
+    await delay(10);
+    timeoutController.abort();
+    timeoutChild.emit("close", null);
+    await expect(timedOut).resolves.toMatchObject({ interrupted: false, timedOut: true });
+    expect(timeoutKill).toHaveBeenCalledTimes(1);
+  });
+
+  it("cleans the owned server tree even after its direct parent has closed", async () => {
+    const child = fakeChild();
+    const kill = vi.fn();
+    const server = await startCommand({ command: "npm", args: ["run", "dev"] }, { cwd: ".", env: {}, timeoutMs: 10 }, processOperations(child, "linux", kill));
+    child.emit("close", 0);
+    await server.stop();
+
+    expect(kill).toHaveBeenCalledWith(-123, "SIGKILL");
   });
 
   it("removes absolute paths and external URLs without obscuring loopback URLs", async () => {
@@ -393,4 +512,23 @@ function projectsReport(projects: Array<{ project: string; results: Array<Record
       specs: [{ title: "generated checkout", tests: [{ results }] }]
     }))
   });
+}
+
+function fakeChild(): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  Object.assign(child, { pid: 123, stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn() });
+  return child;
+}
+
+function processOperations(child: ChildProcess, platform: NodeJS.Platform, kill: ReturnType<typeof vi.fn>, timeout = 10): ProcessTreeOperations {
+  return {
+    platform,
+    spawn: vi.fn(() => child) as typeof import("node:child_process").spawn,
+    kill,
+    cleanupTimeoutMs: timeout
+  };
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 }
