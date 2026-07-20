@@ -37,6 +37,7 @@ const forbiddenModuleNames = new Set([
   "node:worker_threads"
 ]);
 const dangerousMemberNames = new Set([
+  "constructor",
   "getBuiltinModule",
   "require",
   "eval",
@@ -47,6 +48,7 @@ const dangerousMemberNames = new Set([
   "EventSource"
 ]);
 const requestMethodNames = new Set(["fetch", "get", "post", "put", "patch", "delete", "head"]);
+const disallowedPlaywrightMethodNames = new Set(["evaluate", "evaluateHandle", "waitForFunction", "setContent", "addScriptTag", "addStyleTag"]);
 
 export async function stageGeneratedTest(
   worktreePath: string,
@@ -86,13 +88,9 @@ export async function stageGeneratedTest(
     if (!destinationDirectory) {
       return failed("write_failed");
     }
-    const existing = await lstat(destination).catch(() => undefined);
-    if (existing && (existing.isSymbolicLink() || !existing.isFile())) {
-      return failed("write_failed");
-    }
     const handle = await open(
       destination,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
       0o600
     );
     await handle.writeFile(content, "utf8");
@@ -124,10 +122,14 @@ function validateSource(sourceFile: ts.SourceFile): "import" | "api" | undefined
       result = "import";
       return;
     }
-    if (ts.isCallExpression(node) && (isUnsafePlaywrightCall(node) || hasDynamicPlaywrightMember(node))) {
-      const target = node.arguments[0] && staticString(node.arguments[0]);
-      if (hasDynamicPlaywrightMember(node) || !target || !isLocalTarget(target)) {
+    if (ts.isCallExpression(node)) {
+      const playwrightCall = directPlaywrightCall(node);
+      if (playwrightCall === "unsafe") {
         result = "api";
+        return;
+      }
+      if (playwrightCall === "safe") {
+        node.arguments.forEach(visit);
         return;
       }
     }
@@ -146,6 +148,9 @@ function validateSource(sourceFile: ts.SourceFile): "import" | "api" | undefined
       }
     }
     if (
+      isDisallowedPlaywrightMethod(node) ||
+      isEscapedPlaywrightMethod(node) ||
+      isComputedPlaywrightMethod(node) ||
       dangerousMemberNames.has(memberName(node) ?? "") ||
       (ts.isElementAccessExpression(node) &&
         memberName(node) === undefined &&
@@ -170,27 +175,48 @@ function memberName(node: ts.Node): string | undefined {
   return undefined;
 }
 
-function isUnsafePlaywrightCall(node: ts.CallExpression): boolean {
-  const name = memberName(node.expression);
-  if (name === "goto") {
-    return true;
+function directPlaywrightCall(node: ts.CallExpression): "safe" | "unsafe" | undefined {
+  if (!ts.isPropertyAccessExpression(node.expression)) {
+    return undefined;
   }
-  return name !== undefined && requestMethodNames.has(name) && isRequestReceiver(receiver(node.expression));
+  const name = node.expression.name.text;
+  const receiver = node.expression.expression;
+  if (disallowedPlaywrightMethodNames.has(name)) {
+    return "unsafe";
+  }
+  if ((name === "goto" && isPageReceiver(receiver)) ||
+    (requestMethodNames.has(name) && isRequestReceiver(receiver))) {
+    const target = node.arguments[0] && staticString(node.arguments[0]);
+    return target && isLocalTarget(target) ? "safe" : "unsafe";
+  }
+  return undefined;
 }
 
-function hasDynamicPlaywrightMember(node: ts.CallExpression): boolean {
-  return ts.isElementAccessExpression(node.expression) &&
-    memberName(node.expression) === undefined &&
-    isPageOrRequestReceiver(node.expression.expression);
+function isEscapedPlaywrightMethod(node: ts.Node): boolean {
+  if (!ts.isPropertyAccessExpression(node)) {
+    return false;
+  }
+  const name = node.name.text;
+  const isNavigation = name === "goto" && isPageReceiver(node.expression);
+  const isRequest = requestMethodNames.has(name) && isRequestReceiver(node.expression);
+  return (isNavigation || isRequest) && (!ts.isCallExpression(node.parent) || node.parent.expression !== node);
 }
 
-function receiver(node: ts.Node): ts.Expression | undefined {
-  return ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) ? node.expression : undefined;
+function isDisallowedPlaywrightMethod(node: ts.Node): boolean {
+  return ts.isPropertyAccessExpression(node) && disallowedPlaywrightMethodNames.has(node.name.text);
+}
+
+function isComputedPlaywrightMethod(node: ts.Node): boolean {
+  return ts.isElementAccessExpression(node) && isPageOrRequestReceiver(node.expression);
 }
 
 function isRequestReceiver(node: ts.Expression | undefined): boolean {
   return Boolean(node && ((ts.isIdentifier(node) && node.text === "request") ||
     (ts.isPropertyAccessExpression(node) && node.name.text === "request")));
+}
+
+function isPageReceiver(node: ts.Expression): boolean {
+  return ts.isIdentifier(node) && node.text === "page";
 }
 
 function isPageOrRequestReceiver(node: ts.Expression): boolean {

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -142,6 +142,13 @@ describe("generated-test staging", () => {
     }
   });
 
+  it("rejects constructor-based dynamic code access", async () => {
+    const worktree = await createWorktree();
+    await expect(stageGeneratedTest(worktree, "({}).constructor.constructor('return process')();")).resolves.toMatchObject({
+      status: "rejected", failure: { code: "disallowed_api" }
+    });
+  });
+
   it("rejects obvious external network use", async () => {
     const worktree = await createWorktree();
     await expect(stageGeneratedTest(worktree, "fetch('https://example.com');")).resolves.toMatchObject({
@@ -169,8 +176,8 @@ describe("generated-test staging", () => {
   });
 
   it("allows only local static Playwright navigation and request targets", async () => {
-    const worktree = await createWorktree();
-    for (const content of ["page.goto('/checkout');", "page.goto('http://127.0.0.1:3100/');", "request.get('https://localhost/api');"]) {
+    for (const content of ["page.goto('/checkout');", "page.goto('http://127.0.0.1:3100/');", "request.get('https://localhost/api');", "request.fetch('/api');"]) {
+      const worktree = await createWorktree();
       await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({ status: "staged" });
     }
   });
@@ -196,6 +203,35 @@ describe("generated-test staging", () => {
       "request[`get`]('https://' + 'example.com');",
       "page[method]('/checkout');",
       "request[method]('/api')"
+    ]) {
+      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
+        status: "rejected", failure: { code: "disallowed_api" }
+      });
+    }
+  });
+
+  it("rejects escaped Playwright navigation and request methods", async () => {
+    const worktree = await createWorktree();
+    for (const content of [
+      "page.goto.call(page, 'https://' + 'example.com');",
+      "page.goto.bind(page)('/checkout');",
+      "Reflect.apply(page.goto, page, ['/checkout']);",
+      "const navigate = page.goto; navigate('/checkout');",
+      "request.get.call(request, '/api');"
+    ]) {
+      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
+        status: "rejected", failure: { code: "disallowed_api" }
+      });
+    }
+  });
+
+  it("rejects dynamic-code and resource-loading Playwright APIs", async () => {
+    const worktree = await createWorktree();
+    for (const content of [
+      "page.evaluate(\"fetch('https://example.com')\");",
+      "page.evaluate.call(page, \"fetch('https://example.com')\");",
+      "page.setContent(\"<script src='https://example.com/x.js'></script>\");",
+      "page.addScriptTag({ url: 'https://' + 'example.com/x.js' });"
     ]) {
       await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
         status: "rejected", failure: { code: "disallowed_api" }
@@ -229,6 +265,19 @@ describe("generated-test staging", () => {
     await mkdir(join(worktree, "tests", "generated"), { recursive: true });
     await writeFile(victim, "unchanged", "utf8");
     await symlink(victim, join(worktree, stagedGeneratedTestPath));
+
+    await expect(stageGeneratedTest(worktree, validTest)).resolves.toMatchObject({
+      status: "failed", failure: { code: "write_failed" }
+    });
+    await expect(readFile(victim, "utf8")).resolves.toBe("unchanged");
+  });
+
+  it.runIf(process.platform !== "win32")("does not overwrite a hard-linked generated-test file", async () => {
+    const worktree = await createWorktree();
+    const victim = join(await createWorktree(), "victim.spec.ts");
+    await mkdir(join(worktree, "tests", "generated"), { recursive: true });
+    await writeFile(victim, "unchanged", "utf8");
+    await link(victim, join(worktree, stagedGeneratedTestPath));
 
     await expect(stageGeneratedTest(worktree, validTest)).resolves.toMatchObject({
       status: "failed", failure: { code: "write_failed" }
