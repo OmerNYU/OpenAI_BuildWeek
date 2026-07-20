@@ -1,11 +1,13 @@
-import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { stageGeneratedTest, stagedGeneratedTestPath } from "../src/runner/staging.js";
+import { validateGeneratedPlaywrightTest } from "../src/codex/playwright-test.js";
+import { generatedTestCapabilities, stageGeneratedTest, stagedGeneratedTestPath } from "../src/runner/staging.js";
 
 const directories: string[] = [];
-const validTest = "import { expect, test } from '@playwright/test';\ntest('checkout', async ({ page }) => { await page.goto('/'); await page.click('button'); expect(true).toBe(true); });";
+const validTest = "import { expect, test } from '@playwright/test';\ntest('checkout', async ({ page }) => { await page.goto('/'); await page.click('button'); await expect(true).toBe(true); });";
+const compatibleTest = "import { expect, test } from '@playwright/test';\ntest('checkout', async ({ page }) => { await page.goto('/'); await page.getByText('Required').click(); await expect(page.getByText('Required')).toContainText('Required'); });";
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -18,6 +20,30 @@ describe("generated-test staging", () => {
       status: "staged", stagedTestPath: stagedGeneratedTestPath
     });
     await expect(readFile(join(worktree, stagedGeneratedTestPath), "utf8")).resolves.toBe(validTest);
+  });
+
+  it("stages the same unaliased generated-test surface accepted by Codex validation", async () => {
+    const worktree = await createWorktree();
+    expect(validateGeneratedPlaywrightTest(compatibleTest)).toEqual({ valid: true, errors: [] });
+    await expect(stageGeneratedTest(worktree, compatibleTest)).resolves.toMatchObject({ status: "staged" });
+  });
+
+  it("accepts every capability from the single generated-test policy table", async () => {
+    for (const capability of generatedTestCapabilities) {
+      const worktree = await createWorktree();
+      await expect(stageGeneratedTest(worktree, generatedTest(capabilityStatement(capability)))).resolves.toMatchObject({ status: "staged" });
+    }
+  });
+
+  it("rejects invalid forms derived from every generated-test capability", async () => {
+    for (const capability of generatedTestCapabilities) {
+      for (const statement of invalidCapabilityStatements(capability)) {
+        const worktree = await createWorktree();
+        await expect(stageGeneratedTest(worktree, generatedTest(`${statement}; await page.click('button'); await expect(true).toBe(true);`))).resolves.toMatchObject({
+          status: "rejected", failure: { code: "disallowed_api" }
+        });
+      }
+    }
   });
 
   it("accepts a test at the exact 256 KiB boundary", async () => {
@@ -66,7 +92,7 @@ describe("generated-test staging", () => {
     const worktree = await createWorktree();
     for (const module of ["node:child_process", "node:fs", "node:net", "node:worker_threads"]) {
       await expect(stageGeneratedTest(worktree, `await import('${module}');`)).resolves.toMatchObject({
-        status: "rejected", failure: { code: "disallowed_import" }
+        status: "rejected", failure: { code: "disallowed_api" }
       });
     }
   });
@@ -75,7 +101,7 @@ describe("generated-test staging", () => {
     const worktree = await createWorktree();
     for (const module of ["child_process", "node:child_process", "fs", "node:fs", "net", "node:net", "dgram", "node:dgram", "worker_threads", "node:worker_threads"]) {
       await expect(stageGeneratedTest(worktree, `const moduleName = '${module}';`)).resolves.toMatchObject({
-        status: "rejected", failure: { code: "disallowed_import" }
+        status: "rejected", failure: { code: "disallowed_api" }
       });
     }
   });
@@ -191,7 +217,7 @@ describe("generated-test staging", () => {
   it("allows only local static Playwright navigation and request targets", async () => {
     for (const content of ["page.goto('/checkout');", "page.goto('http://127.0.0.1:3100/');", "request.get('https://localhost/api');", "request.fetch('/api');"]) {
       const worktree = await createWorktree();
-      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({ status: "staged" });
+      await expect(stageGeneratedTest(worktree, generatedTest(`await ${content.replace(/;$/, "")}; await page.click('button'); await expect(true).toBe(true);`))).resolves.toMatchObject({ status: "staged" });
     }
   });
 
@@ -283,6 +309,40 @@ describe("generated-test staging", () => {
       });
     }
   });
+
+  it("rejects unmodelled control flow, allocation, and module-load code", async () => {
+    const worktree = await createWorktree();
+    for (const content of [
+      "while (true) {}",
+      "import { expect, test } from '@playwright/test'; test('x', async ({ page }) => { while (true) {} });",
+      "import { expect, test } from '@playwright/test'; test('x', async ({ page }) => { new Array(1_000_000_000); });"
+    ]) {
+      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
+        status: "rejected", failure: { code: "disallowed_api" }
+      });
+    }
+  });
+
+  it("rejects empty, incomplete, aliased, and un-awaited generated tests", async () => {
+    const worktree = await createWorktree();
+    for (const content of [
+      "import { expect, test } from '@playwright/test'; test('x', async ({ page }) => {});",
+      "import { expect, test } from '@playwright/test'; test('x', async ({ page }) => { await expect(true).toBe(true); });",
+      "import { expect, test } from '@playwright/test'; test('x', async ({ page }) => { await page.click('button'); });",
+      "import { expect, test as pwTest } from '@playwright/test'; pwTest('x', async ({ page }) => { await page.click('button'); await expect(true).toBe(true); });",
+      "import { expect, test } from '@playwright/test'; test('x', async ({ page }) => { await page.click('button'); expect(true).toBe(true); });"
+    ]) {
+      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({ status: "rejected" });
+    }
+  });
+
+  it.runIf(process.platform !== "win32")("requires a private investigation-owned worktree", async () => {
+    const worktree = await createWorktree();
+    await chmod(worktree, 0o755);
+    await expect(stageGeneratedTest(worktree, validTest)).resolves.toMatchObject({
+      status: "failed", failure: { code: "write_failed" }
+    });
+  });
   it.runIf(process.platform !== "win32")("rejects a symlinked tests directory", async () => {
     const worktree = await createWorktree();
     const victim = await createWorktree();
@@ -317,7 +377,7 @@ describe("generated-test staging", () => {
     await expect(readFile(victim, "utf8")).resolves.toBe("unchanged");
   });
 
-  it.runIf(process.platform !== "win32")("does not overwrite a hard-linked generated-test file", async () => {
+  it("does not overwrite a hard-linked generated-test file", async () => {
     const worktree = await createWorktree();
     const victim = join(await createWorktree(), "victim.spec.ts");
     await mkdir(join(worktree, "tests", "generated"), { recursive: true });
@@ -335,4 +395,49 @@ async function createWorktree(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "failspec-runner-"));
   directories.push(directory);
   return directory;
+}
+
+function generatedTest(body: string): string {
+  return `import { expect, test } from '@playwright/test'; test('checkout', async ({ page, request }) => { ${body} });`;
+}
+
+function capabilityStatement(capability: typeof generatedTestCapabilities[number]): string {
+  if (capability.receiver === "page") {
+    const call = capability.method === "goto" ? "page.goto('/')" : `page.${capability.method}('value')`;
+    return `await ${call}; await page.click('button'); await expect(true).toBe(true);`;
+  }
+  if (capability.receiver === "request") {
+    return `await request.${capability.method}('/api'); await page.click('button'); await expect(true).toBe(true);`;
+  }
+  if (capability.receiver === "locator") {
+    return `await page.locator('button').${capability.method}('value'); await expect(true).toBe(true);`;
+  }
+  return `await page.click('button'); await expect(true).${capability.method}('value');`;
+}
+
+function invalidCapabilityStatements(capability: typeof generatedTestCapabilities[number]): string[] {
+  const receiver = capability.receiver === "locator" ? "page.locator('button')" : capability.receiver;
+  const argument = capability.arguments === "local_target" ? "'/api'" : "'value'";
+  const statements = [
+    `await ${wrongReceiver(capability)}.${capability.method}(${argument})`,
+    `await ${receiver}.unsupported(${argument})`,
+    `await ${receiver}['${capability.method}'](${argument})`
+  ];
+  if (capability.arguments === "local_target") {
+    statements.push(
+      `await ${receiver}.${capability.method}('https://example.com')`,
+      `await ${receiver}.${capability.method}(target)`
+    );
+  }
+  return statements;
+}
+
+function wrongReceiver(capability: typeof generatedTestCapabilities[number]): string {
+  if (capability.receiver === "request") {
+    return "page";
+  }
+  if (capability.receiver === "expect") {
+    return "page";
+  }
+  return "request";
 }

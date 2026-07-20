@@ -121,7 +121,7 @@ Record only decisions confirmed by the team. Do not add speculative or unapprove
 - **Context:** Keep local investigation operations isolated from submitted source repositories while preserving the deterministic mock workflow.
 - **Alternatives considered:** Operate directly in the submitted repository or require a real Git repository in mock mode.
 - **Rationale:** Preflight and a detached owned worktree keep local operations within Person 3's repository-safety boundary, while pass-through mode keeps the mock API usable for arbitrary test paths.
-- **Consequences:** Cleanup is required before a successful terminal completion. Cleanup is not durable or recoverable across server restarts. Generated-test staging and real Playwright execution remain deferred.
+- **Consequences:** From successful preparation through cleanup, each worktree is exclusively owned by its investigation: FailSpec components do not mutate it concurrently; Codex is read-only; staging completes before generated code or an application/browser process launches; and cleanup is required before successful terminal completion. On POSIX, staging enforces a root owned by the current user with no group or other permissions. Deliberate concurrent mutation by an external process under the same OS user remains outside the MVP threat model, so staging is bounded validation rather than a sandbox. Cleanup is not durable or recoverable across server restarts. Generated-test staging and real Playwright execution remain deferred.
 - **Owners:** Persons 1 and 3
 
 ### Execution and verification boundary

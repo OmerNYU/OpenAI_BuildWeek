@@ -1,60 +1,31 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, stat } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, stat, unlink } from "node:fs/promises";
 import { basename, isAbsolute, join, relative } from "node:path";
 import type { GeneratedTestStagingResult } from "@failspec/contracts";
 import * as ts from "typescript";
 
 export const stagedGeneratedTestPath = "tests/generated/failspec.generated.spec.ts";
 const maximumGeneratedTestBytes = 256 * 1024;
-const forbiddenIdentifiers = new Set([
-  "child_process",
-  "fs",
-  "net",
-  "dgram",
-  "worker_threads",
-  "module",
-  "process",
-  "global",
-  "globalThis",
-  "eval",
-  "Function",
-  "fetch",
-  "XMLHttpRequest",
-  "WebSocket",
-  "EventSource",
-  "require"
-]);
-const forbiddenModuleNames = new Set([
-  "child_process",
-  "node:child_process",
-  "fs",
-  "node:fs",
-  "net",
-  "node:net",
-  "dgram",
-  "node:dgram",
-  "worker_threads",
-  "node:worker_threads"
-]);
-const dangerousMemberNames = new Set([
-  "constructor",
-  "getBuiltinModule",
-  "require",
-  "eval",
-  "Function",
-  "fetch",
-  "XMLHttpRequest",
-  "WebSocket",
-  "EventSource"
-]);
-const requestMethodNames = new Set(["fetch", "get", "post", "put", "patch", "delete", "head"]);
-const allowedPlaywrightImports = new Set(["expect", "test"]);
-const allowedPlaywrightMethodNames = new Set([
-  "blur", "check", "click", "dblclick", "fill", "focus", "getByAltText", "getByLabel", "getByPlaceholder",
-  "getByRole", "getByTestId", "getByText", "getByTitle", "hover", "locator", "press", "selectOption", "toBe",
-  "toBeChecked", "toBeEnabled", "toBeHidden", "toBeVisible", "toContain", "toEqual", "toHaveText", "toHaveURL",
-  "toHaveValue", "toMatch", "toMatchObject", "type", "uncheck", "waitForSelector"
-]);
+type CapabilityReceiver = "page" | "request" | "locator" | "expect";
+type CapabilityArguments = "literal" | "local_target";
+type CapabilityResult = "void" | "locator" | "assertion";
+
+interface GeneratedTestCapability {
+  receiver: CapabilityReceiver;
+  method: string;
+  arguments: CapabilityArguments;
+  result: CapabilityResult;
+  interaction?: true;
+}
+
+export const generatedTestCapabilities: readonly GeneratedTestCapability[] = [
+  { receiver: "page", method: "goto", arguments: "local_target", result: "void", interaction: true },
+  ...["blur", "check", "click", "dblclick", "fill", "focus", "hover", "press", "selectOption", "type", "uncheck"].map((method) => ({ receiver: "page" as const, method, arguments: "literal" as const, result: "void" as const, interaction: true as const })),
+  ...["getByAltText", "getByLabel", "getByPlaceholder", "getByRole", "getByTestId", "getByText", "getByTitle", "locator", "waitForSelector"].map((method) => ({ receiver: "page" as const, method, arguments: "literal" as const, result: "locator" as const })),
+  ...["fetch", "get", "post", "put", "patch", "delete", "head"].map((method) => ({ receiver: "request" as const, method, arguments: "local_target" as const, result: "void" as const })),
+  ...["blur", "check", "click", "dblclick", "fill", "focus", "hover", "press", "selectOption", "type", "uncheck"].map((method) => ({ receiver: "locator" as const, method, arguments: "literal" as const, result: "void" as const, interaction: true as const })),
+  ...["toBe", "toBeChecked", "toBeEnabled", "toBeHidden", "toBeVisible", "toContain", "toContainText", "toEqual", "toHaveText", "toHaveURL", "toHaveValue", "toMatch", "toMatchObject"].map((method) => ({ receiver: "expect" as const, method, arguments: "literal" as const, result: "assertion" as const }))
+];
 
 export async function stageGeneratedTest(
   worktreePath: string,
@@ -84,7 +55,7 @@ export async function stageGeneratedTest(
   }
 
   const root = await canonicalDirectory(worktreePath);
-  if (!root) {
+  if (!root || !(await isPrivateWorktree(root))) {
     return failed("write_failed");
   }
   try {
@@ -99,17 +70,23 @@ export async function stageGeneratedTest(
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
       0o600
     );
+    let created: Awaited<ReturnType<typeof handle.stat>> | undefined;
+    let staged = false;
     try {
-      const opened = await handle.stat();
+      created = await handle.stat();
       const resolvedDestination = await realpath(destination);
       const current = await stat(destination);
-      if (resolvedDestination !== destination || opened.dev !== current.dev || opened.ino !== current.ino) {
+      if (resolvedDestination !== destination || created.dev !== current.dev || created.ino !== current.ino) {
         return failed("write_failed");
       }
       await handle.writeFile(content, "utf8");
+      staged = true;
       return { status: "staged", stagedTestPath: stagedGeneratedTestPath };
     } finally {
       await handle.close();
+      if (!staged && created) {
+        await removeCreatedFile(destination, created);
+      }
     }
   } catch {
     return failed("write_failed");
@@ -117,148 +94,121 @@ export async function stageGeneratedTest(
 }
 
 function validateSource(sourceFile: ts.SourceFile): "import" | "api" | undefined {
-  let result: "import" | "api" | undefined;
-  const visit = (node: ts.Node) => {
-    if (result) {
-      return;
-    }
-    if (ts.isImportDeclaration(node)) {
-      if (!isAllowedPlaywrightImport(node)) {
-        result = "import";
-        return;
-      }
-    }
-    if (
-      ts.isImportEqualsDeclaration(node) ||
-      ts.isImportTypeNode(node) ||
-      (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) ||
-      (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword)
-    ) {
-      result = "import";
-      return;
-    }
-    if (ts.isCallExpression(node)) {
-      const playwrightCall = directPlaywrightCall(node);
-      if (playwrightCall === "unsafe") {
-        result = "api";
-        return;
-      }
-    }
-    if (ts.isIdentifier(node) && forbiddenIdentifiers.has(node.text) && !isApprovedDirectCallMemberName(node)) {
-      result = "api";
-      return;
-    }
-    if (ts.isStringLiteral(node)) {
-      if (forbiddenModuleNames.has(node.text)) {
-        result = "import";
-        return;
-      }
-      if (isExternalHttpUrl(node.text)) {
-        result = "api";
-        return;
-      }
-    }
-    if (
-      isEscapedPlaywrightMethod(node) ||
-      isComputedPlaywrightMethod(node) ||
-      isUnresolvedComputedCapabilityCall(node) ||
-      (dangerousMemberNames.has(memberName(node) ?? "") && !isApprovedDirectCallMember(node)) ||
-      (ts.isElementAccessExpression(node) &&
-        memberName(node) === undefined &&
-        hasSensitiveRoot(node.expression))
-    ) {
-      result = "api";
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return result;
+  if (sourceFile.statements.some(ts.isImportDeclaration) && !isExactPlaywrightImport(sourceFile.statements[0])) {
+    return "import";
+  }
+  if (sourceFile.statements.length !== 2 || !isExactPlaywrightImport(sourceFile.statements[0])) {
+    return "api";
+  }
+  return isGeneratedTestCall(sourceFile.statements[1]) ? undefined : "api";
 }
 
-function memberName(node: ts.Node): string | undefined {
-  if (ts.isPropertyAccessExpression(node)) {
-    return node.name.text;
+function isGeneratedTestCall(statement: ts.Statement): boolean {
+  if (!ts.isExpressionStatement(statement) || !ts.isCallExpression(statement.expression) || !ts.isIdentifier(statement.expression.expression) || statement.expression.expression.text !== "test") {
+    return false;
   }
-  if (ts.isElementAccessExpression(node)) {
-    return node.argumentExpression && staticString(node.argumentExpression);
-  }
-  return undefined;
+  const [title, callback] = statement.expression.arguments;
+  return statement.expression.arguments.length === 2 && staticString(title) !== undefined && callback !== undefined && isTestCallback(callback);
 }
 
-function directPlaywrightCall(node: ts.CallExpression): "safe" | "unsafe" | undefined {
-  if (ts.isIdentifier(node.expression)) {
-    return node.expression.text === "test" || node.expression.text === "expect" ? "safe" : "unsafe";
+function isTestCallback(node: ts.Expression): boolean {
+  if (!ts.isArrowFunction(node) || !node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) || !ts.isBlock(node.body) || node.parameters.length !== 1) {
+    return false;
   }
-  if (!ts.isPropertyAccessExpression(node.expression)) {
-    return "unsafe";
+  const parameter = node.parameters[0];
+  if (parameter.dotDotDotToken || parameter.initializer || parameter.type || !ts.isObjectBindingPattern(parameter.name)) {
+    return false;
   }
-  const name = node.expression.name.text;
-  const receiver = node.expression.expression;
-  if (name === "goto" || requestMethodNames.has(name)) {
-    if (!((name === "goto" && isPageReceiver(receiver)) ||
-      (requestMethodNames.has(name) && isRequestReceiver(receiver)))) {
-      return "unsafe";
+  const names = parameter.name.elements.map((element) => !element.propertyName && !element.initializer && ts.isIdentifier(element.name) ? element.name.text : undefined);
+  if (names.length === 0 || names.length > 2 || !names.includes("page") || names.some((name) => name !== "page" && name !== "request")) {
+    return false;
+  }
+  let hasInteraction = false;
+  let hasAssertion = false;
+  for (const statement of node.body.statements) {
+    const kind = classifyTestStatement(statement);
+    if (!kind) {
+      return false;
     }
+    hasInteraction ||= kind === "interaction";
+    hasAssertion ||= kind === "assertion";
+  }
+  return hasInteraction && hasAssertion;
+}
+
+function classifyTestStatement(statement: ts.Statement): "interaction" | "assertion" | "other" | undefined {
+  if (!ts.isExpressionStatement(statement) || !ts.isAwaitExpression(statement.expression)) {
+    return undefined;
+  }
+  const capability = capabilityCall(statement.expression.expression);
+  if (capability) {
+    return capability.interaction ? "interaction" : "other";
+  }
+  return isExpectation(statement.expression.expression) ? "assertion" : undefined;
+}
+
+function capabilityCall(node: ts.Expression): GeneratedTestCapability | undefined {
+  if (!ts.isCallExpression(node) || !node.arguments.every(isLiteralValue)) {
+    return undefined;
+  }
+  const expression = node.expression;
+  if (!ts.isPropertyAccessExpression(expression)) {
+    return undefined;
+  }
+  const receiver = capabilityReceiver(expression.expression);
+  if (!receiver) {
+    return undefined;
+  }
+  const capability = generatedTestCapabilities.find((candidate) => candidate.receiver === receiver && candidate.method === expression.name.text);
+  if (!capability) {
+    return undefined;
+  }
+  if (capability.arguments === "local_target") {
     const target = node.arguments[0] && staticString(node.arguments[0]);
-    return target && isLocalTarget(target) ? "safe" : "unsafe";
+    return target !== undefined && isLocalTarget(target) ? capability : undefined;
   }
-  return allowedPlaywrightMethodNames.has(name) ? "safe" : "unsafe";
+  return capability;
 }
 
-function isEscapedPlaywrightMethod(node: ts.Node): boolean {
-  if (!ts.isPropertyAccessExpression(node)) {
+function capabilityReceiver(node: ts.Expression): "page" | "request" | "locator" | undefined {
+  if (ts.isIdentifier(node)) {
+    return node.text === "page" || node.text === "request" ? node.text : undefined;
+  }
+  if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression) || !node.arguments.every(isLiteralValue)) {
+    return undefined;
+  }
+  const capability = capabilityCall(node);
+  return capability?.result === "locator" ? "locator" : undefined;
+}
+
+function isExpectation(node: ts.Expression): boolean {
+  if (!ts.isCallExpression(node) || !node.arguments.every(isLiteralValue)) {
     return false;
   }
-  const name = node.name.text;
-  return (name === "goto" || requestMethodNames.has(name)) &&
-    (!ts.isCallExpression(node.parent) || node.parent.expression !== node);
-}
-
-function isComputedPlaywrightMethod(node: ts.Node): boolean {
-  return ts.isElementAccessExpression(node) && isPageOrRequestReceiver(node.expression);
-}
-
-function isApprovedDirectCallMember(node: ts.Node): boolean {
-  return ts.isPropertyAccessExpression(node) && ts.isCallExpression(node.parent) &&
-    node.parent.expression === node && directPlaywrightCall(node.parent) === "safe";
-}
-
-function isApprovedDirectCallMemberName(node: ts.Identifier): boolean {
-  return ts.isPropertyAccessExpression(node.parent) && node.parent.name === node && isApprovedDirectCallMember(node.parent);
-}
-
-function isUnresolvedComputedCapabilityCall(node: ts.Node): boolean {
-  if (!ts.isElementAccessExpression(node) || memberName(node) !== undefined) {
+  const expression = node.expression;
+  if (!ts.isPropertyAccessExpression(expression)) {
     return false;
   }
-  let current: ts.Node = node;
-  while (ts.isPropertyAccessExpression(current.parent) || ts.isElementAccessExpression(current.parent)) {
-    current = current.parent;
+  const capability = generatedTestCapabilities.find((candidate) => candidate.receiver === "expect" && candidate.method === expression.name.text);
+  if (!capability) {
+    return false;
   }
-  return ts.isCallExpression(current.parent) && current.parent.expression === current;
+  const expectCall = expression.expression;
+  return ts.isCallExpression(expectCall) && ts.isIdentifier(expectCall.expression) && expectCall.expression.text === "expect" && expectCall.arguments.length === 1 && isExpectationValue(expectCall.arguments[0]);
 }
 
-function isRequestReceiver(node: ts.Expression | undefined): boolean {
-  return Boolean(node && ((ts.isIdentifier(node) && node.text === "request") ||
-    (ts.isPropertyAccessExpression(node) && node.name.text === "request")));
+function isExpectationValue(node: ts.Expression): boolean {
+  return isLiteralValue(node) || capabilityReceiver(node) === "page" || capabilityReceiver(node) === "locator";
 }
 
-function isPageReceiver(node: ts.Expression): boolean {
-  return ts.isIdentifier(node) && node.text === "page";
-}
-
-function isPageOrRequestReceiver(node: ts.Expression): boolean {
-  return (ts.isIdentifier(node) && (node.text === "page" || node.text === "request")) ||
-    (ts.isPropertyAccessExpression(node) && node.name.text === "request");
-}
-
-function hasSensitiveRoot(node: ts.Expression): boolean {
-  let current: ts.Expression = node;
-  while (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
-    current = current.expression;
+function isLiteralValue(node: ts.Expression): boolean {
+  if (staticString(node) !== undefined || ts.isNumericLiteral(node) || node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword || node.kind === ts.SyntaxKind.NullKeyword) {
+    return true;
   }
-  return ts.isIdentifier(current) && ["module", "process", "globalThis", "global"].includes(current.text);
+  if (ts.isArrayLiteralExpression(node)) {
+    return node.elements.every((element) => ts.isExpression(element) && isLiteralValue(element));
+  }
+  return ts.isObjectLiteralExpression(node) && node.properties.every((property) => ts.isPropertyAssignment(property) && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) && isLiteralValue(property.initializer));
 }
 
 function staticString(node: ts.Expression): string | undefined {
@@ -294,13 +244,16 @@ function isLocalTarget(target: string): boolean {
   }
 }
 
-function isAllowedPlaywrightImport(node: ts.ImportDeclaration): boolean {
-  if (!ts.isStringLiteral(node.moduleSpecifier) || node.moduleSpecifier.text !== "@playwright/test" || node.importClause?.isTypeOnly) {
+function isExactPlaywrightImport(statement: ts.Statement | undefined): statement is ts.ImportDeclaration {
+  if (!statement || !ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) || statement.moduleSpecifier.text !== "@playwright/test" || statement.importClause?.isTypeOnly) {
     return false;
   }
-  const bindings = node.importClause?.namedBindings;
-  return Boolean(bindings && ts.isNamedImports(bindings) && bindings.elements.length > 0 &&
-    bindings.elements.every((specifier) => !specifier.propertyName && allowedPlaywrightImports.has(specifier.name.text)));
+  const bindings = statement.importClause?.namedBindings;
+  if (!bindings || !ts.isNamedImports(bindings) || bindings.elements.length !== 2) {
+    return false;
+  }
+  return new Set(bindings.elements.map((specifier) => !specifier.propertyName ? specifier.name.text : "")).size === 2 &&
+    bindings.elements.every((specifier) => !specifier.propertyName && (specifier.name.text === "expect" || specifier.name.text === "test"));
 }
 
 async function ownedDirectory(parent: string, name: string): Promise<string | undefined> {
@@ -317,16 +270,6 @@ async function ownedDirectory(parent: string, name: string): Promise<string | un
   return isInside(parent, canonicalPath) ? canonicalPath : undefined;
 }
 
-function isExternalHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return (url.protocol === "http:" || url.protocol === "https:") &&
-      url.hostname !== "127.0.0.1" && url.hostname !== "localhost";
-  } catch {
-    return false;
-  }
-}
-
 async function canonicalDirectory(path: string): Promise<string | undefined> {
   try {
     const canonicalPath = await realpath(path);
@@ -336,9 +279,29 @@ async function canonicalDirectory(path: string): Promise<string | undefined> {
   }
 }
 
+async function isPrivateWorktree(root: string): Promise<boolean> {
+  if (process.platform === "win32") {
+    return true;
+  }
+  const owner = process.getuid?.();
+  const entry = await stat(root);
+  return owner !== undefined && entry.uid === owner && (entry.mode & 0o077) === 0;
+}
+
 function isInside(root: string, candidate: string): boolean {
   const path = relative(root, candidate);
   return path.length > 0 && !path.startsWith("..") && !isAbsolute(path);
+}
+
+async function removeCreatedFile(path: string, created: { dev: number | bigint; ino: number | bigint }): Promise<void> {
+  try {
+    const current = await lstat(path);
+    if (current.dev === created.dev && current.ino === created.ino) {
+      await unlink(path);
+    }
+  } catch {
+    // The failed staging result is already sanitized; never remove a replacement.
+  }
 }
 
 function rejected(code: "invalid_encoding" | "file_too_large" | "typescript_parse_failed" | "disallowed_import" | "disallowed_api") {
