@@ -1,6 +1,6 @@
 import {
   cleanupIsolatedWorktree,
-  prepareIsolatedWorktreeAttempt
+  prepareIsolatedWorktree
 } from "./worktree/index.js";
 import { preflightRepository } from "./preflight.js";
 
@@ -28,13 +28,13 @@ export interface RepositoryWorkspace {
 
 interface RepositoryWorkspaceOperations {
   preflightRepository: typeof preflightRepository;
-  prepareIsolatedWorktreeAttempt: typeof prepareIsolatedWorktreeAttempt;
+  prepareIsolatedWorktree: typeof prepareIsolatedWorktree;
   cleanupIsolatedWorktree: typeof cleanupIsolatedWorktree;
 }
 
 const defaultOperations: RepositoryWorkspaceOperations = {
   preflightRepository,
-  prepareIsolatedWorktreeAttempt,
+  prepareIsolatedWorktree,
   cleanupIsolatedWorktree
 };
 
@@ -74,14 +74,11 @@ export class LocalRepositoryWorkspace implements RepositoryWorkspace {
         return preparationFailed();
       }
 
-      const worktree = await this.operations.prepareIsolatedWorktreeAttempt(
+      const worktree = await this.operations.prepareIsolatedWorktree(
         preflight.repositoryPath,
         investigationId
       );
       if (worktree.status !== "prepared") {
-        if (worktree.cleanupAuthorized) {
-          await this.operations.cleanupIsolatedWorktree(investigationId).catch(() => undefined);
-        }
         return preparationFailed();
       }
 
