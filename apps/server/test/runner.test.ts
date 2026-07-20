@@ -94,6 +94,13 @@ describe("generated-test staging", () => {
     }
   });
 
+  it("rejects all Node module-root usage", async () => {
+    const worktree = await createWorktree();
+    await expect(stageGeneratedTest(worktree, "module.constructor._load('path');")).resolves.toMatchObject({
+      status: "rejected", failure: { code: "disallowed_api" }
+    });
+  });
+
   it("rejects forbidden APIs", async () => {
     const worktree = await createWorktree();
     await expect(stageGeneratedTest(worktree, "eval('1');")).resolves.toMatchObject({
@@ -133,6 +140,18 @@ describe("generated-test staging", () => {
     await expect(stageGeneratedTest(worktree, "fetch('https://example.com');")).resolves.toMatchObject({
       status: "rejected", failure: { code: "disallowed_api" }
     });
+  });
+
+  it("rejects computed global network APIs", async () => {
+    const worktree = await createWorktree();
+    for (const content of [
+      "globalThis['fetch']('https://' + 'example.com');",
+      "global['fetch']('https://' + 'example.com');"
+    ]) {
+      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
+        status: "rejected", failure: { code: "disallowed_api" }
+      });
+    }
   });
 
   it("allows only local static Playwright navigation and request targets", async () => {

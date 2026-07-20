@@ -12,6 +12,7 @@ const forbiddenIdentifiers = new Set([
   "net",
   "dgram",
   "worker_threads",
+  "module",
   "eval",
   "Function",
   "fetch",
@@ -32,7 +33,16 @@ const forbiddenModuleNames = new Set([
   "worker_threads",
   "node:worker_threads"
 ]);
-const dangerousMemberNames = new Set(["getBuiltinModule", "require", "eval", "Function"]);
+const dangerousMemberNames = new Set([
+  "getBuiltinModule",
+  "require",
+  "eval",
+  "Function",
+  "fetch",
+  "XMLHttpRequest",
+  "WebSocket",
+  "EventSource"
+]);
 const requestMethodNames = new Set(["fetch", "get", "post", "put", "patch", "delete", "head"]);
 
 export async function stageGeneratedTest(
@@ -190,7 +200,7 @@ function hasSensitiveRoot(node: ts.Expression): boolean {
   while (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
     current = current.expression;
   }
-  return ts.isIdentifier(current) && ["module", "process", "globalThis"].includes(current.text);
+  return ts.isIdentifier(current) && ["module", "process", "globalThis", "global"].includes(current.text);
 }
 
 function staticString(node: ts.Expression): string | undefined {
