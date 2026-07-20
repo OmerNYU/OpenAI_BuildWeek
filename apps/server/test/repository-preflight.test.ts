@@ -52,7 +52,7 @@ describe("repository preflight", () => {
     expect(vitePolicy.framework).toBe("vite");
     expect(buildStartCommand(vitePolicy, 3102)).toEqual({
       command: "npm",
-      args: ["run", "dev", "--", "--host", "127.0.0.1", "--port", "3102"]
+      args: ["run", "dev", "--", "--host", "127.0.0.1", "--port", "3102", "--strictPort"]
     });
   });
 

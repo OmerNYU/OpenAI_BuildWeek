@@ -1,4 +1,4 @@
-import { link, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -25,7 +25,7 @@ describe("controlled Playwright runner", () => {
     const output = await new PlaywrightRunnerAdapter(operations).run(input(worktree));
 
     expect(operations.start).toHaveBeenCalledWith(
-      { command: "npm", args: ["run", "dev", "--", "--host", "127.0.0.1", "--port", "43123"] },
+      { command: "npm", args: ["run", "dev", "--", "--host", "127.0.0.1", "--port", "43123", "--strictPort"] },
       expect.objectContaining({
         cwd: canonicalWorktree,
         env: expect.objectContaining({
@@ -41,6 +41,9 @@ describe("controlled Playwright runner", () => {
       },
       expect.any(Object)
     );
+    expect(operations.run).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
+      env: expect.objectContaining({ PLAYWRIGHT_JSON_OUTPUT_FILE: join(canonicalWorktree, ".failspec", "runner", "playwright-report.json") })
+    }));
     expect(output).toMatchObject({
       execution: { command: "controlled_playwright_generated_test", timedOut: false },
       evidence: { testTitle: "generated checkout", testStatus: "passed" }
@@ -176,7 +179,7 @@ describe("controlled Playwright runner", () => {
     });
   });
 
-  it("rejects a readiness response if the managed child has already exited", async () => {
+  it("rejects an unrelated readiness response when the managed child exits from a port collision", async () => {
     const worktree = await createWorktree();
     const operations = fakeOperations(report("passed"));
     operations.start = vi.fn(async () => ({ isRunning: () => false, stop: operations.stop }));
@@ -199,35 +202,34 @@ describe("controlled Playwright runner", () => {
     }
   });
 
-  it("removes spaced absolute paths without obscuring loopback URLs", async () => {
+  it("removes absolute paths and external URLs without obscuring loopback URLs", async () => {
     const worktree = await createWorktree();
     const output = await new PlaywrightRunnerAdapter(fakeOperations(projectsReport([{
       project: "chromium",
       results: [{
         status: "failed",
         retry: 0,
-        errors: [{ message: "C:\\Users\\Omer Hayat\\repo\\secret.ts:1:2\n/Users/Omer Hayat/repo/secret.ts:3:4\nhttp://127.0.0.1:43123/checkout" }]
+        errors: [{ message: "C:\\Users\\Omer Hayat\\repo\\secret.ts:1:2\n/Users/Omer Hayat/repo/secret.ts:3:4\nhttp://127.0.0.1:43123/checkout?session=secret\nhttps://example.com/private?token=secret" }]
       }]
     }]))).run(input(worktree));
 
     expect(output.evidence.assertionFailureMessage).not.toContain("Omer Hayat");
+    expect(output.evidence.assertionFailureMessage).not.toContain("example.com");
+    expect(output.evidence.assertionFailureMessage).not.toContain("secret");
     expect(output.evidence.assertionFailureMessage).toContain("http://127.0.0.1:43123/checkout");
   });
 
-  it("does not overwrite a pre-existing runner report inode", async () => {
+  it("does not delete or overwrite repository-provided runner artifacts", async () => {
     const worktree = await createWorktree();
-    const victimDirectory = await mkdtemp(join(tmpdir(), "failspec-runner-victim-"));
-    directories.push(victimDirectory);
-    const victim = join(victimDirectory, "report.json");
-    const reportPath = join(worktree, ".failspec", "runner", "playwright-report.json");
-    await mkdir(join(worktree, ".failspec", "runner"), { recursive: true });
-    await writeFile(victim, "unchanged", "utf8");
-    await link(victim, reportPath);
+    const sentinel = join(worktree, ".failspec", "runner", "artifacts", "sentinel.txt");
+    await mkdir(dirname(sentinel), { recursive: true });
+    await writeFile(sentinel, "unchanged", "utf8");
 
     const output = await new PlaywrightRunnerAdapter(fakeOperations(report("passed"))).run(input(worktree));
 
     expect(output).toMatchObject({ evidence: { testStatus: "unknown" } });
-    await expect(readFile(victim, "utf8")).resolves.toBe("unchanged");
+    expect(output.execution.exitCode).toBeNull();
+    await expect(readFile(sentinel, "utf8")).resolves.toBe("unchanged");
   });
 });
 
@@ -265,7 +267,7 @@ function fakeOperations(reporter: string, result: Partial<CommandResult> = {}): 
     waitForReady: vi.fn(async () => true),
     run: vi.fn(async (command, options) => {
       if (command.args.includes("test:generated")) {
-        const reportPath = options.env.PLAYWRIGHT_JSON_OUTPUT_NAME;
+        const reportPath = options.env.PLAYWRIGHT_JSON_OUTPUT_FILE;
         if (reportPath) {
           await mkdir(join(dirname(reportPath), "artifacts"), { recursive: true });
           await writeFile(join(dirname(reportPath), "artifacts", "trace.zip"), "trace", "utf8");

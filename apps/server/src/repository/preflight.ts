@@ -225,7 +225,7 @@ export function buildStartCommand(policy: RepositoryCommandPolicy, port: number)
   const hostFlag = policy.framework === "next" ? "--hostname" : "--host";
   return {
     command: "npm",
-    args: ["run", policy.startScript, "--", hostFlag, "127.0.0.1", "--port", String(port)]
+    args: ["run", policy.startScript, "--", hostFlag, "127.0.0.1", "--port", String(port), ...(policy.framework === "vite" ? ["--strictPort"] : [])]
   };
 }
 

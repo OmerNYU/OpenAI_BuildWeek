@@ -135,7 +135,7 @@ export class PlaywrightRunnerAdapter implements RunnerAdapter {
           ...environment,
           FAILSPEC_BASE_URL: baseUrl,
           FAILSPEC_MANAGED_SERVER: "1",
-          PLAYWRIGHT_JSON_OUTPUT_NAME: output.reportPath
+          PLAYWRIGHT_JSON_OUTPUT_FILE: output.reportPath
         },
         timeoutMs: testTimeoutMs
       });
@@ -182,7 +182,7 @@ async function outputFilesAreAbsent(paths: { reportPath: string; stderrLog: stri
 
 async function runnerPaths(worktreePath: string): Promise<{ reportPath: string; stderrLog: string; serverLog: string; artifactsPath: string } | undefined> {
   const directory = await ownedDirectory(worktreePath, ".failspec");
-  const runnerDirectory = directory && await ownedDirectory(directory, "runner");
+  const runnerDirectory = directory && await createOwnedDirectory(directory, "runner");
   const artifactsPath = runnerDirectory && await ownedDirectory(runnerDirectory, "artifacts");
   if (!runnerDirectory || !artifactsPath) {
     return undefined;
@@ -193,6 +193,21 @@ async function runnerPaths(worktreePath: string): Promise<{ reportPath: string; 
     serverLog: join(runnerDirectory, "server.log"),
     artifactsPath
   };
+}
+
+async function createOwnedDirectory(parent: string, name: string): Promise<string | undefined> {
+  const path = join(parent, name);
+  try {
+    await mkdir(path);
+    const entry = await lstat(path);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) {
+      return undefined;
+    }
+    const canonicalPath = await realpath(path);
+    return isInside(parent, canonicalPath) ? canonicalPath : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function ownedDirectory(parent: string, name: string): Promise<string | undefined> {
@@ -390,7 +405,10 @@ function text(value: unknown, worktreePath: string): string | undefined {
     return undefined;
   }
   const urls: string[] = [];
-  const protectedUrls = value.replace(/https?:\/\/[^\s]+/g, (url) => `[[FAILSPEC_URL_${urls.push(url) - 1}]]`);
+  const protectedUrls = value.replace(/https?:\/\/[^\s]+/g, (url) => {
+    const loopbackUrl = localUrl(url);
+    return loopbackUrl ? `[[FAILSPEC_URL_${urls.push(loopbackUrl) - 1}]]` : "[url]";
+  });
   const worktreeVariants = new Set([worktreePath, worktreePath.replaceAll("/", "\\"), worktreePath.replaceAll("\\", "/")]);
   const sanitized = [...worktreeVariants].reduce((current, path) => current.replaceAll(path, "[worktree]"), protectedUrls
     .replace(/[A-Za-z]:[\\/][^\r\n]*/g, "[path]")
@@ -399,6 +417,15 @@ function text(value: unknown, worktreePath: string): string | undefined {
     .trim()
     .slice(0, maximumEvidenceTextLength);
   return sanitized || undefined;
+}
+
+function localUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    return url.hostname === "127.0.0.1" || url.hostname === "localhost" ? `${url.origin}${url.pathname}` : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function positiveNumber(value: unknown): number | undefined {
