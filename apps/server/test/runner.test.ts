@@ -83,9 +83,14 @@ describe("generated-test staging", () => {
 
   it("allows only test and expect imports from @playwright/test", async () => {
     const worktree = await createWorktree();
-    await expect(stageGeneratedTest(worktree, "import { chromium } from '@playwright/test';")).resolves.toMatchObject({
-      status: "rejected", failure: { code: "disallowed_import" }
-    });
+    for (const content of [
+      "import { chromium } from '@playwright/test';",
+      "import defaultBinding, { expect, test } from '@playwright/test';"
+    ]) {
+      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
+        status: "rejected", failure: { code: "disallowed_import" }
+      });
+    }
   });
 
   it("rejects dynamic imports of forbidden Node modules", async () => {
@@ -315,7 +320,22 @@ describe("generated-test staging", () => {
     for (const content of [
       "while (true) {}",
       "import { expect, test } from '@playwright/test'; test('x', async ({ page }) => { while (true) {} });",
-      "import { expect, test } from '@playwright/test'; test('x', async ({ page }) => { new Array(1_000_000_000); });"
+      "import { expect, test } from '@playwright/test'; test('x', async ({ page }) => { new Array(1_000_000_000); });",
+      deepTitleTest(20_000),
+      deepLiteralTest("array", 2_000),
+      deepLiteralTest("object", 2_000)
+    ]) {
+      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
+        status: "rejected", failure: { code: "disallowed_api" }
+      });
+    }
+  });
+
+  it("rejects unsupported result chains and matcher signatures", async () => {
+    const worktree = await createWorktree();
+    for (const content of [
+      generatedTest("await page.waitForSelector('button').getByRole('button'); await page.click('button'); await expect(true).toBe(true);"),
+      generatedTest("await page.click('button'); await expect(true).toBeVisible('unexpected');")
     ]) {
       await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
         status: "rejected", failure: { code: "disallowed_api" }
@@ -403,33 +423,78 @@ function generatedTest(body: string): string {
 
 function capabilityStatement(capability: typeof generatedTestCapabilities[number]): string {
   if (capability.receiver === "page") {
-    const call = capability.method === "goto" ? "page.goto('/')" : `page.${capability.method}('value')`;
+    const call = `page.${capability.method}(${capabilityArguments(capability)})`;
     return `await ${call}; await page.click('button'); await expect(true).toBe(true);`;
   }
   if (capability.receiver === "request") {
-    return `await request.${capability.method}('/api'); await page.click('button'); await expect(true).toBe(true);`;
+    return `await request.${capability.method}(${capabilityArguments(capability)}); await page.click('button'); await expect(true).toBe(true);`;
   }
   if (capability.receiver === "locator") {
-    return `await page.locator('button').${capability.method}('value'); await expect(true).toBe(true);`;
+    return `await page.locator('button').${capability.method}(${capabilityArguments(capability)}); await expect(true).toBe(true);`;
   }
-  return `await page.click('button'); await expect(true).${capability.method}('value');`;
+  return `await page.click('button'); await ${expectationExpression(capability)}.${capability.method}(${capabilityArguments(capability)});`;
 }
 
 function invalidCapabilityStatements(capability: typeof generatedTestCapabilities[number]): string[] {
-  const receiver = capability.receiver === "locator" ? "page.locator('button')" : capability.receiver;
-  const argument = capability.arguments === "local_target" ? "'/api'" : "'value'";
+  const receiver = capabilityReceiver(capability);
+  const argument = capabilityArguments(capability);
   const statements = [
     `await ${wrongReceiver(capability)}.${capability.method}(${argument})`,
     `await ${receiver}.unsupported(${argument})`,
     `await ${receiver}['${capability.method}'](${argument})`
   ];
+  if (capability.minimumArguments > 0) {
+    statements.push(`await ${receiver}.${capability.method}(${argumentsForCount(capability, capability.minimumArguments - 1)})`);
+  }
+  statements.push(`await ${receiver}.${capability.method}(${argumentsForCount(capability, capability.maximumArguments + 1)})`);
   if (capability.arguments === "local_target") {
     statements.push(
       `await ${receiver}.${capability.method}('https://example.com')`,
       `await ${receiver}.${capability.method}(target)`
     );
   }
+  if (capability.receiver === "expect") {
+    statements.push(`await expect(${capability.expectationValue === "literal" ? "page.locator('button')" : "true"}).${capability.method}(${argument})`);
+  }
   return statements;
+}
+
+function capabilityReceiver(capability: typeof generatedTestCapabilities[number]): string {
+  if (capability.receiver === "locator") {
+    return "page.locator('button')";
+  }
+  return capability.receiver === "expect" ? "expect(true)" : capability.receiver;
+}
+
+function capabilityArguments(capability: typeof generatedTestCapabilities[number]): string {
+  if (capability.receiver === "expect" && capability.method === "toMatchObject") {
+    return "{ value: 'value' }";
+  }
+  return argumentsForCount(capability, capability.minimumArguments);
+}
+
+function expectationExpression(capability: typeof generatedTestCapabilities[number]): string {
+  if (capability.expectationValue === "locator") {
+    return "expect(page.locator('button'))";
+  }
+  if (capability.expectationValue === "page") {
+    return "expect(page)";
+  }
+  return capability.method === "toMatchObject" ? "expect({ value: 'value' })" : "expect('value')";
+}
+
+function argumentsForCount(capability: typeof generatedTestCapabilities[number], count: number): string {
+  if (count === 0) {
+    return "";
+  }
+  const values = capability.arguments === "local_target"
+    ? ["'/api'", "'value'"]
+    : capability.arguments === "selector_value"
+      ? ["'button'", "'value'"]
+      : capability.arguments === "selector"
+        ? ["'button'"]
+        : ["'value'"];
+  return Array.from({ length: count }, (_, index) => values[index] ?? "'extra'").join(", ");
 }
 
 function wrongReceiver(capability: typeof generatedTestCapabilities[number]): string {
@@ -440,4 +505,15 @@ function wrongReceiver(capability: typeof generatedTestCapabilities[number]): st
     return "page";
   }
   return "request";
+}
+
+function deepTitleTest(terms: number): string {
+  return `import { expect, test } from '@playwright/test'; test(${Array.from({ length: terms }, () => "'x'").join(" + ")}, async ({ page }) => { await page.click('button'); await expect(true).toBe(true); });`;
+}
+
+function deepLiteralTest(kind: "array" | "object", depth: number): string {
+  const literal = kind === "array"
+    ? `${"[".repeat(depth)}'value'${"]".repeat(depth)}`
+    : `${"{ value: ".repeat(depth)}'value'${" }".repeat(depth)}`;
+  return generatedTest(`await page.click(${literal}); await expect(true).toBe(true);`);
 }

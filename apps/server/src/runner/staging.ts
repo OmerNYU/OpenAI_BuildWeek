@@ -7,8 +7,9 @@ import * as ts from "typescript";
 export const stagedGeneratedTestPath = "tests/generated/failspec.generated.spec.ts";
 const maximumGeneratedTestBytes = 256 * 1024;
 type CapabilityReceiver = "page" | "request" | "locator" | "expect";
-type CapabilityArguments = "literal" | "local_target";
+type CapabilityArguments = "literal" | "local_target" | "selector" | "selector_value" | "value";
 type CapabilityResult = "void" | "locator" | "assertion";
+type ExpectationValue = "literal" | "locator" | "page";
 
 interface GeneratedTestCapability {
   receiver: CapabilityReceiver;
@@ -16,15 +17,26 @@ interface GeneratedTestCapability {
   arguments: CapabilityArguments;
   result: CapabilityResult;
   interaction?: true;
+  minimumArguments: number;
+  maximumArguments: number;
+  expectationValue?: ExpectationValue;
 }
 
+const pageSelectorActions = ["check", "click", "dblclick", "focus", "hover", "uncheck"] as const;
+const locatorSelectorActions = ["blur", ...pageSelectorActions] as const;
+const valueActions = ["fill", "press", "selectOption", "type"] as const;
 export const generatedTestCapabilities: readonly GeneratedTestCapability[] = [
-  { receiver: "page", method: "goto", arguments: "local_target", result: "void", interaction: true },
-  ...["blur", "check", "click", "dblclick", "fill", "focus", "hover", "press", "selectOption", "type", "uncheck"].map((method) => ({ receiver: "page" as const, method, arguments: "literal" as const, result: "void" as const, interaction: true as const })),
-  ...["getByAltText", "getByLabel", "getByPlaceholder", "getByRole", "getByTestId", "getByText", "getByTitle", "locator", "waitForSelector"].map((method) => ({ receiver: "page" as const, method, arguments: "literal" as const, result: "locator" as const })),
-  ...["fetch", "get", "post", "put", "patch", "delete", "head"].map((method) => ({ receiver: "request" as const, method, arguments: "local_target" as const, result: "void" as const })),
-  ...["blur", "check", "click", "dblclick", "fill", "focus", "hover", "press", "selectOption", "type", "uncheck"].map((method) => ({ receiver: "locator" as const, method, arguments: "literal" as const, result: "void" as const, interaction: true as const })),
-  ...["toBe", "toBeChecked", "toBeEnabled", "toBeHidden", "toBeVisible", "toContain", "toContainText", "toEqual", "toHaveText", "toHaveURL", "toHaveValue", "toMatch", "toMatchObject"].map((method) => ({ receiver: "expect" as const, method, arguments: "literal" as const, result: "assertion" as const }))
+  { receiver: "page", method: "goto", arguments: "local_target", result: "void", interaction: true, minimumArguments: 1, maximumArguments: 1 },
+  ...pageSelectorActions.map((method) => ({ receiver: "page" as const, method, arguments: "selector" as const, result: "void" as const, interaction: true as const, minimumArguments: 1, maximumArguments: 1 })),
+  ...valueActions.map((method) => ({ receiver: "page" as const, method, arguments: "selector_value" as const, result: "void" as const, interaction: true as const, minimumArguments: 2, maximumArguments: 2 })),
+  ...["getByAltText", "getByLabel", "getByPlaceholder", "getByRole", "getByTestId", "getByText", "getByTitle", "locator"].map((method) => ({ receiver: "page" as const, method, arguments: "value" as const, result: "locator" as const, minimumArguments: 1, maximumArguments: 1 })),
+  ...["fetch", "get", "post", "put", "patch", "delete", "head"].map((method) => ({ receiver: "request" as const, method, arguments: "local_target" as const, result: "void" as const, minimumArguments: 1, maximumArguments: 1 })),
+  ...locatorSelectorActions.map((method) => ({ receiver: "locator" as const, method, arguments: "literal" as const, result: "void" as const, interaction: true as const, minimumArguments: 0, maximumArguments: 0 })),
+  ...valueActions.map((method) => ({ receiver: "locator" as const, method, arguments: "value" as const, result: "void" as const, interaction: true as const, minimumArguments: 1, maximumArguments: 1 })),
+  ...["toBeChecked", "toBeEnabled", "toBeHidden", "toBeVisible"].map((method) => ({ receiver: "expect" as const, method, arguments: "literal" as const, result: "assertion" as const, minimumArguments: 0, maximumArguments: 0, expectationValue: "locator" as const })),
+  ...["toBe", "toContain", "toEqual", "toMatch", "toMatchObject"].map((method) => ({ receiver: "expect" as const, method, arguments: "value" as const, result: "assertion" as const, minimumArguments: 1, maximumArguments: 1, expectationValue: "literal" as const })),
+  ...["toContainText", "toHaveText", "toHaveValue"].map((method) => ({ receiver: "expect" as const, method, arguments: "value" as const, result: "assertion" as const, minimumArguments: 1, maximumArguments: 1, expectationValue: "locator" as const })),
+  { receiver: "expect", method: "toHaveURL", arguments: "value", result: "assertion", minimumArguments: 1, maximumArguments: 1, expectationValue: "page" }
 ];
 
 export async function stageGeneratedTest(
@@ -38,19 +50,20 @@ export async function stageGeneratedTest(
     return rejected("file_too_large");
   }
 
-  const sourceFile = ts.createSourceFile(stagedGeneratedTestPath, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const diagnostics = ts.transpileModule(content, {
-    compilerOptions: { target: ts.ScriptTarget.Latest },
-    reportDiagnostics: true
-  }).diagnostics;
-  if (diagnostics?.some((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error)) {
-    return rejected("typescript_parse_failed");
-  }
-  const validation = validateSource(sourceFile);
-  if (validation === "import") {
-    return rejected("disallowed_import");
-  }
-  if (validation === "api") {
+  try {
+    const sourceFile = ts.createSourceFile(stagedGeneratedTestPath, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const parseDiagnostics = (sourceFile as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
+    if (parseDiagnostics.some((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error)) {
+      return rejected("typescript_parse_failed");
+    }
+    const validation = validateSource(sourceFile);
+    if (validation === "import") {
+      return rejected("disallowed_import");
+    }
+    if (validation === "api") {
+      return rejected("disallowed_api");
+    }
+  } catch {
     return rejected("disallowed_api");
   }
 
@@ -163,6 +176,9 @@ function capabilityCall(node: ts.Expression): GeneratedTestCapability | undefine
   if (!capability) {
     return undefined;
   }
+  if (node.arguments.length < capability.minimumArguments || node.arguments.length > capability.maximumArguments) {
+    return undefined;
+  }
   if (capability.arguments === "local_target") {
     const target = node.arguments[0] && staticString(node.arguments[0]);
     return target !== undefined && isLocalTarget(target) ? capability : undefined;
@@ -193,35 +209,75 @@ function isExpectation(node: ts.Expression): boolean {
   if (!capability) {
     return false;
   }
+  if (node.arguments.length < capability.minimumArguments || node.arguments.length > capability.maximumArguments) {
+    return false;
+  }
   const expectCall = expression.expression;
-  return ts.isCallExpression(expectCall) && ts.isIdentifier(expectCall.expression) && expectCall.expression.text === "expect" && expectCall.arguments.length === 1 && isExpectationValue(expectCall.arguments[0]);
+  return ts.isCallExpression(expectCall) && ts.isIdentifier(expectCall.expression) && expectCall.expression.text === "expect" && expectCall.arguments.length === 1 && expectationValue(expectCall.arguments[0]) === capability.expectationValue;
 }
 
-function isExpectationValue(node: ts.Expression): boolean {
-  return isLiteralValue(node) || capabilityReceiver(node) === "page" || capabilityReceiver(node) === "locator";
+function expectationValue(node: ts.Expression): ExpectationValue | undefined {
+  if (isLiteralValue(node)) {
+    return "literal";
+  }
+  const receiver = capabilityReceiver(node);
+  return receiver === "page" || receiver === "locator" ? receiver : undefined;
 }
 
 function isLiteralValue(node: ts.Expression): boolean {
-  if (staticString(node) !== undefined || ts.isNumericLiteral(node) || node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword || node.kind === ts.SyntaxKind.NullKeyword) {
-    return true;
+  const pending: Array<{ node: ts.Expression; depth: number }> = [{ node, depth: 0 }];
+  let visited = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || current.depth > 64 || ++visited > 512) {
+      return false;
+    }
+    if (staticString(current.node) !== undefined || ts.isNumericLiteral(current.node) || current.node.kind === ts.SyntaxKind.TrueKeyword || current.node.kind === ts.SyntaxKind.FalseKeyword || current.node.kind === ts.SyntaxKind.NullKeyword) {
+      continue;
+    }
+    if (ts.isArrayLiteralExpression(current.node)) {
+      for (const element of current.node.elements) {
+        if (!ts.isExpression(element)) {
+          return false;
+        }
+        pending.push({ node: element, depth: current.depth + 1 });
+      }
+      continue;
+    }
+    if (!ts.isObjectLiteralExpression(current.node)) {
+      return false;
+    }
+    for (const property of current.node.properties) {
+      if (!ts.isPropertyAssignment(property) || (!ts.isIdentifier(property.name) && !ts.isStringLiteral(property.name))) {
+        return false;
+      }
+      pending.push({ node: property.initializer, depth: current.depth + 1 });
+    }
   }
-  if (ts.isArrayLiteralExpression(node)) {
-    return node.elements.every((element) => ts.isExpression(element) && isLiteralValue(element));
-  }
-  return ts.isObjectLiteralExpression(node) && node.properties.every((property) => ts.isPropertyAssignment(property) && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) && isLiteralValue(property.initializer));
+  return true;
 }
 
 function staticString(node: ts.Expression): string | undefined {
-  const literal = stringValue(node);
-  if (literal !== undefined) {
-    return literal;
+  const pending: ts.Expression[] = [node];
+  const parts: string[] = [];
+  while (pending.length > 0) {
+    if (parts.length + pending.length > 256) {
+      return undefined;
+    }
+    const current = pending.pop();
+    if (!current) {
+      return undefined;
+    }
+    const literal = stringValue(current);
+    if (literal !== undefined) {
+      parts.push(literal);
+    } else if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      pending.push(current.right, current.left);
+    } else {
+      return undefined;
+    }
   }
-  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    const left = staticString(node.left);
-    const right = staticString(node.right);
-    return left === undefined || right === undefined ? undefined : left + right;
-  }
-  return undefined;
+  return parts.join("");
 }
 
 function stringValue(node: ts.Node): string | undefined {
@@ -245,7 +301,7 @@ function isLocalTarget(target: string): boolean {
 }
 
 function isExactPlaywrightImport(statement: ts.Statement | undefined): statement is ts.ImportDeclaration {
-  if (!statement || !ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) || statement.moduleSpecifier.text !== "@playwright/test" || statement.importClause?.isTypeOnly) {
+  if (!statement || !ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) || statement.moduleSpecifier.text !== "@playwright/test" || statement.importClause?.isTypeOnly || statement.importClause?.name) {
     return false;
   }
   const bindings = statement.importClause?.namedBindings;

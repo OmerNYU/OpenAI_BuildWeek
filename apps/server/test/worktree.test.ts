@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -9,15 +9,42 @@ import {
   prepareIsolatedWorktree,
   type WorktreeGitRunner
 } from "../src/repository/index.js";
+import { stageGeneratedTest } from "../src/runner/staging.js";
 
 const run = promisify(execFile);
 const directories: string[] = [];
+const generatedTest = "import { expect, test } from '@playwright/test'; test('checkout', async ({ page }) => { await page.click('button'); await expect(true).toBe(true); });";
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
 describe("isolated worktrees", () => {
+  it.runIf(process.platform !== "win32")("creates a private worktree that accepts generated-test staging", async () => {
+    const sourceRepositoryPath = await createRepository();
+    const rootPath = await createDirectory();
+    const prepared = await prepareIsolatedWorktree(sourceRepositoryPath, "staging-private", { testRootPath: rootPath });
+
+    expect(prepared.status).toBe("prepared");
+    if (prepared.status !== "prepared") {
+      return;
+    }
+    expect((await stat(prepared.worktreePath)).mode & 0o077).toBe(0);
+    await expect(stageGeneratedTest(prepared.worktreePath, generatedTest)).resolves.toMatchObject({ status: "staged" });
+    await expect(cleanupIsolatedWorktree(prepared.investigationId, { testRootPath: rootPath })).resolves.toEqual({ status: "cleaned" });
+  });
+
+  it.runIf(process.platform !== "win32")("rolls back a worktree when private permissions cannot be applied", async () => {
+    const sourceRepositoryPath = await createRepository();
+    const rootPath = await createDirectory();
+    await expect(prepareIsolatedWorktree(sourceRepositoryPath, "permission-failure", {
+      testRootPath: rootPath,
+      testHooks: { beforeWorktreePermissions: () => { throw new Error("chmod failed"); } }
+    })).resolves.toEqual({ status: "failed", failure: { code: "creation_failed" } });
+    await expect(readdir(rootPath)).resolves.not.toContain("permission-failure");
+    await expect(readdir(rootPath)).resolves.not.toContain("permission-failure.json");
+  });
+
   it("creates a detached worktree from committed HEAD and cleans it without changing the source", async () => {
     const sourceRepositoryPath = await createRepository();
     const rootPath = await createDirectory();
