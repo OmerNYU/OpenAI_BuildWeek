@@ -144,9 +144,15 @@ describe("generated-test staging", () => {
 
   it("rejects constructor-based dynamic code access", async () => {
     const worktree = await createWorktree();
-    await expect(stageGeneratedTest(worktree, "({}).constructor.constructor('return process')();")).resolves.toMatchObject({
-      status: "rejected", failure: { code: "disallowed_api" }
-    });
+    for (const content of [
+      "({}).constructor.constructor('return process')();",
+      "({})['con' + 'structor']['con' + 'structor']('return process')();",
+      "const key = 'constructor'; ({})[key]();"
+    ]) {
+      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
+        status: "rejected", failure: { code: "disallowed_api" }
+      });
+    }
   });
 
   it("rejects obvious external network use", async () => {
@@ -218,6 +224,21 @@ describe("generated-test staging", () => {
       "Reflect.apply(page.goto, page, ['/checkout']);",
       "const navigate = page.goto; navigate('/checkout');",
       "request.get.call(request, '/api');"
+    ]) {
+      await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
+        status: "rejected", failure: { code: "disallowed_api" }
+      });
+    }
+  });
+
+  it("rejects aliased, destructured, and chained Playwright navigation and request methods", async () => {
+    const worktree = await createWorktree();
+    for (const content of [
+      "const p = page; p.goto('https://' + 'example.com');",
+      "const r = request; r.get('https://' + 'example.com');",
+      "const { goto } = page; goto('/checkout');",
+      "const { get } = request; get('/api');",
+      "page.context().newPage().goto('https://' + 'example.com');"
     ]) {
       await expect(stageGeneratedTest(worktree, content)).resolves.toMatchObject({
         status: "rejected", failure: { code: "disallowed_api" }

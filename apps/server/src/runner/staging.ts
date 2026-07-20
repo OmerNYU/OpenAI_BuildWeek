@@ -151,6 +151,7 @@ function validateSource(sourceFile: ts.SourceFile): "import" | "api" | undefined
       isDisallowedPlaywrightMethod(node) ||
       isEscapedPlaywrightMethod(node) ||
       isComputedPlaywrightMethod(node) ||
+      isUnresolvedComputedCapabilityCall(node) ||
       dangerousMemberNames.has(memberName(node) ?? "") ||
       (ts.isElementAccessExpression(node) &&
         memberName(node) === undefined &&
@@ -170,12 +171,15 @@ function memberName(node: ts.Node): string | undefined {
     return node.name.text;
   }
   if (ts.isElementAccessExpression(node)) {
-    return node.argumentExpression && stringValue(node.argumentExpression);
+    return node.argumentExpression && staticString(node.argumentExpression);
   }
   return undefined;
 }
 
 function directPlaywrightCall(node: ts.CallExpression): "safe" | "unsafe" | undefined {
+  if (ts.isIdentifier(node.expression) && (node.expression.text === "goto" || requestMethodNames.has(node.expression.text))) {
+    return "unsafe";
+  }
   if (!ts.isPropertyAccessExpression(node.expression)) {
     return undefined;
   }
@@ -184,8 +188,11 @@ function directPlaywrightCall(node: ts.CallExpression): "safe" | "unsafe" | unde
   if (disallowedPlaywrightMethodNames.has(name)) {
     return "unsafe";
   }
-  if ((name === "goto" && isPageReceiver(receiver)) ||
-    (requestMethodNames.has(name) && isRequestReceiver(receiver))) {
+  if (name === "goto" || requestMethodNames.has(name)) {
+    if (!((name === "goto" && isPageReceiver(receiver)) ||
+      (requestMethodNames.has(name) && isRequestReceiver(receiver)))) {
+      return "unsafe";
+    }
     const target = node.arguments[0] && staticString(node.arguments[0]);
     return target && isLocalTarget(target) ? "safe" : "unsafe";
   }
@@ -197,9 +204,8 @@ function isEscapedPlaywrightMethod(node: ts.Node): boolean {
     return false;
   }
   const name = node.name.text;
-  const isNavigation = name === "goto" && isPageReceiver(node.expression);
-  const isRequest = requestMethodNames.has(name) && isRequestReceiver(node.expression);
-  return (isNavigation || isRequest) && (!ts.isCallExpression(node.parent) || node.parent.expression !== node);
+  return (name === "goto" || requestMethodNames.has(name)) &&
+    (!ts.isCallExpression(node.parent) || node.parent.expression !== node);
 }
 
 function isDisallowedPlaywrightMethod(node: ts.Node): boolean {
@@ -208,6 +214,17 @@ function isDisallowedPlaywrightMethod(node: ts.Node): boolean {
 
 function isComputedPlaywrightMethod(node: ts.Node): boolean {
   return ts.isElementAccessExpression(node) && isPageOrRequestReceiver(node.expression);
+}
+
+function isUnresolvedComputedCapabilityCall(node: ts.Node): boolean {
+  if (!ts.isElementAccessExpression(node) || memberName(node) !== undefined) {
+    return false;
+  }
+  let current: ts.Node = node;
+  while (ts.isPropertyAccessExpression(current.parent) || ts.isElementAccessExpression(current.parent)) {
+    current = current.parent;
+  }
+  return ts.isCallExpression(current.parent) && current.parent.expression === current;
 }
 
 function isRequestReceiver(node: ts.Expression | undefined): boolean {
