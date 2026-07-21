@@ -14,6 +14,11 @@ const cases = [
     valid: true
   },
   {
+    name: "a role locator with literal options",
+    content: program("await page.goto('/'); await page.getByRole('button', { name: 'Complete checkout' }).click(); await expect(page.getByRole('status')).toHaveText('Charged total: $24.00');"),
+    valid: true
+  },
+  {
     name: "a local request target",
     content: program("await request.get('http://127.0.0.1:3100/api'); await page.click('button'); await expect(true).toBe(true);", "{ page, request }"),
     valid: true
