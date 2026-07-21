@@ -48,8 +48,17 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(screen.getAllByText("String must contain at least 1 character(s)").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/^Enter /).length).toBeGreaterThan(0);
     expect(screen.getByLabelText("Repository path").getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("explains the trusted repository boundary and keeps technical context optional", () => {
+    render(<App />);
+
+    expect(screen.getByText(/trusted, clean local Git repository/i)).toBeTruthy();
+    expect(screen.getByText(/never changes your submitted source checkout/i)).toBeTruthy();
+    expect(screen.getByText("Add technical context (optional)")).toBeTruthy();
+    expect(screen.getByText(/Required fields are enough to begin/i)).toBeTruthy();
   });
 
   it("submits normalized input and omits blank optional values", async () => {
@@ -79,6 +88,41 @@ describe("App", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(100); });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/Terminal status:/)).toBeTruthy();
+  });
+
+  it("shows the current server timeline phase, elapsed time, and live log while polling", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-18T12:00:02.000Z"));
+    const active = makeInvestigation("analyzing", ["created", "preflight", "analyzing"]);
+    fetchMock.mockResolvedValueOnce(jsonResponse(active));
+    render(<App pollIntervalMs={1_000} />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    await flushPromises();
+    expect(screen.getByRole("status").textContent).toContain("analyzing message");
+    expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("2");
+    expect(screen.getByText("Elapsed:").parentElement?.textContent).toContain("2s");
+    expect(screen.getByText("Live updates every 1 second.")).toBeTruthy();
+    const log = screen.getByRole("list", { name: "Investigation timeline" });
+    expect(within(log).getByText("Created").textContent).toContain("Created");
+    expect(within(log).getByText(/Analyzing · Current/)).toBeTruthy();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(screen.getByText("Elapsed:").parentElement?.textContent).toContain("3s");
+  });
+
+  it("makes submission progress explicit while creation is pending", () => {
+    let resolveCreation: (response: Response) => void = () => {};
+    fetchMock.mockImplementationOnce(() => new Promise((resolve) => { resolveCreation = resolve; }));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const button = screen.getByRole("button", { name: "Starting investigation…" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    void resolveCreation;
   });
 
   it("renders file-backed analysis evidence under the terminal hypothesis", async () => {
@@ -145,6 +189,21 @@ describe("App", () => {
     const evidence = await screen.findByRole("list", { name: "Analysis evidence" });
     expect(screen.getByText(/Execution failure:/)).toBeTruthy();
     expect(within(evidence).getByRole("listitem").textContent).toContain("The missing validation state is preserved after submission.");
+  });
+
+  it("renders a sanitized Codex failure category without raw diagnostics", async () => {
+    const secret = "C:/secret/project credential failure";
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("execution_error", undefined, undefined, {
+      codexFailureCategory: "invalid_generated_test_output",
+      verdictExplanation: "Codex generated a test outside the approved policy.",
+      recommendedNextStep: "Retry the investigation to request a corrected Codex response."
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    expect(await screen.findByText(/Codex generated a test outside the approved policy/i)).toBeTruthy();
+    expect(screen.queryByText(secret)).toBeNull();
   });
 
   it("renders complete structured execution evidence without exposing raw execution data", async () => {
@@ -837,6 +896,7 @@ function makeInvestigation(
     executionEvidence?: Investigation["executionEvidence"];
     execution?: Investigation["execution"];
     verification?: Investigation["verification"];
+    codexFailureCategory?: Investigation["codexFailureCategory"];
     verdictExplanation?: Investigation["verdictExplanation"];
     recommendedNextStep?: Investigation["recommendedNextStep"];
   } = {}
@@ -867,6 +927,7 @@ function makeInvestigation(
     ...("executionEvidence" in options ? { executionEvidence: options.executionEvidence } : {}),
     ...("execution" in options ? { execution: options.execution } : {}),
     ...("verification" in options ? { verification: options.verification } : {}),
+    ...("codexFailureCategory" in options ? { codexFailureCategory: options.codexFailureCategory } : {}),
     ...("verdictExplanation" in options ? { verdictExplanation: options.verdictExplanation } : {}),
     ...("recommendedNextStep" in options ? { recommendedNextStep: options.recommendedNextStep } : {})
   };

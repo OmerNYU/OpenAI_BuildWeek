@@ -3,6 +3,7 @@ import { investigationRequestSchema, type InvestigationRequest } from "@failspec
 
 export interface BugReportFormProps {
   disabled: boolean;
+  submitting?: boolean;
   submissionError?: string;
   onSubmit: (request: InvestigationRequest) => Promise<void>;
 }
@@ -23,19 +24,20 @@ const initialValues: FormValues = {
 const fields: Array<{
   name: keyof InvestigationRequest;
   label: string;
+  hint?: string;
   multiline?: boolean;
   optional?: boolean;
 }> = [
-  { name: "repositoryPath", label: "Repository path" },
-  { name: "bugTitle", label: "Bug title" },
-  { name: "bugDescription", label: "Bug description", multiline: true },
-  { name: "expectedBehavior", label: "Expected behavior", multiline: true },
-  { name: "actualBehavior", label: "Actual behavior", multiline: true },
+  { name: "repositoryPath", label: "Repository path", hint: "Absolute path to the clean local repository you want to investigate." },
+  { name: "bugTitle", label: "Bug title", hint: "Use a short description of the user-visible failure." },
+  { name: "bugDescription", label: "Bug description", hint: "Describe the smallest sequence that exposes the problem.", multiline: true },
+  { name: "expectedBehavior", label: "Expected behavior", hint: "State the outcome the user should see.", multiline: true },
+  { name: "actualBehavior", label: "Actual behavior", hint: "State the outcome the user sees instead.", multiline: true },
   { name: "terminalLog", label: "Terminal log", multiline: true, optional: true },
   { name: "screenshotPath", label: "Screenshot path", optional: true }
 ];
 
-export function BugReportForm({ disabled, submissionError, onSubmit }: BugReportFormProps) {
+export function BugReportForm({ disabled, submitting = false, submissionError, onSubmit }: BugReportFormProps) {
   const [values, setValues] = useState<FormValues>(initialValues);
   const [errors, setErrors] = useState<FieldErrors>({});
   const submissionErrorRef = useRef<HTMLDivElement>(null);
@@ -55,7 +57,7 @@ export function BugReportForm({ disabled, submissionError, onSubmit }: BugReport
       const fieldErrors: FieldErrors = {};
       for (const issue of parsed.error.issues) {
         const field = issue.path[0] as keyof InvestigationRequest;
-        fieldErrors[field] ??= issue.message;
+        fieldErrors[field] ??= requiredMessage(field);
       }
       setErrors(fieldErrors);
       return;
@@ -72,36 +74,44 @@ export function BugReportForm({ disabled, submissionError, onSubmit }: BugReport
           {submissionError}
         </div>
       ) : null}
-      <div className="form-grid">
-        {fields.map((field) => {
-          const error = errors[field.name];
-          const inputId = `investigation-${field.name}`;
-          const errorId = `${inputId}-error`;
-          const commonProps = {
-            id: inputId,
-            name: field.name,
-            value: values[field.name],
-            onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
-              setValues((current) => ({ ...current, [field.name]: event.target.value })),
-            disabled,
-            "aria-invalid": Boolean(error),
-            "aria-describedby": error ? errorId : undefined
-          };
-
-          return (
-            <div className="form-field" key={field.name}>
-              <label htmlFor={inputId}>
-                {field.label}{field.optional ? " (optional)" : ""}
-              </label>
-              {field.multiline ? <textarea rows={4} {...commonProps} /> : <input {...commonProps} />}
-              {error ? <p className="field-error" id={errorId}>{error}</p> : null}
-            </div>
-          );
-        })}
-      </div>
-      <button type="submit" disabled={disabled}>Start investigation</button>
+      <p className="form-intro">Required fields are enough to begin. Add logs or a screenshot path only when they help explain the failure.</p>
+      <div className="form-grid">{fields.filter((field) => !field.optional).map(renderField)}</div>
+      <details className="optional-context">
+        <summary>Add technical context (optional)</summary>
+        <div className="form-grid">{fields.filter((field) => field.optional).map(renderField)}</div>
+      </details>
+      <button type="submit" disabled={disabled} aria-busy={submitting}>
+        {submitting ? "Starting investigation…" : "Start investigation"}
+      </button>
     </form>
   );
+
+  function renderField(field: typeof fields[number]) {
+    const error = errors[field.name];
+    const inputId = `investigation-${field.name}`;
+    const errorId = `${inputId}-error`;
+    const hintId = `${inputId}-hint`;
+    const describedBy = [field.hint ? hintId : undefined, error ? errorId : undefined].filter(Boolean).join(" ") || undefined;
+    const commonProps = {
+      id: inputId,
+      name: field.name,
+      value: values[field.name],
+      onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+        setValues((current) => ({ ...current, [field.name]: event.target.value })),
+      disabled,
+      "aria-invalid": Boolean(error),
+      "aria-describedby": describedBy
+    };
+
+    return (
+      <div className="form-field" key={field.name}>
+        <label htmlFor={inputId}>{field.label}{field.optional ? " (optional)" : ""}</label>
+        {field.hint ? <p className="field-hint" id={hintId}>{field.hint}</p> : null}
+        {field.multiline ? <textarea rows={4} {...commonProps} /> : <input {...commonProps} />}
+        {error ? <p className="field-error" id={errorId}>{error}</p> : null}
+      </div>
+    );
+  }
 }
 
 function normalize(values: FormValues): InvestigationRequest {
@@ -114,4 +124,8 @@ function normalize(values: FormValues): InvestigationRequest {
     ...(values.terminalLog.trim() ? { terminalLog: values.terminalLog.trim() } : {}),
     ...(values.screenshotPath.trim() ? { screenshotPath: values.screenshotPath.trim() } : {})
   };
+}
+
+function requiredMessage(field: keyof InvestigationRequest): string {
+  return `Enter ${fields.find((candidate) => candidate.name === field)?.label.toLowerCase() ?? "a value"}.`;
 }

@@ -11,6 +11,7 @@ export function InvestigationResults({ investigation }: { investigation?: Invest
   return (
     <div className={isExecutionError ? "result result-error" : "result"}>
       <p><strong>{isOperationalExecutionError ? "Execution failure" : "Terminal status"}:</strong> {investigation.status.replaceAll("_", " ")}</p>
+      {investigation.codexFailureCategory ? <p><strong>Codex response:</strong> {formatCodexFailure(investigation.codexFailureCategory)}</p> : null}
       {investigation.hypothesis ? (
         <>
           <p><strong>Hypothesis:</strong> {investigation.hypothesis.summary}</p>
@@ -39,12 +40,21 @@ export function InvestigationResults({ investigation }: { investigation?: Invest
       <ExecutionEvidenceSection evidence={investigation.executionEvidence} />
       {investigation.verification ? <VerificationResultSection verification={investigation.verification} /> : (
         <>
-          {investigation.verdictExplanation ? <p><strong>Verdict:</strong> {investigation.verdictExplanation}</p> : null}
+          {investigation.verdictExplanation && !investigation.codexFailureCategory ? <p><strong>Verdict:</strong> {investigation.verdictExplanation}</p> : null}
           {investigation.recommendedNextStep ? <p><strong>Next step:</strong> {investigation.recommendedNextStep}</p> : null}
         </>
       )}
     </div>
   );
+}
+
+function formatCodexFailure(category: NonNullable<Investigation["codexFailureCategory"]>): string {
+  const labels = {
+    cli_failed: "Codex CLI was unavailable or did not complete.",
+    invalid_analysis_output: "Codex analysis did not match the required format.",
+    invalid_generated_test_output: "Codex generated a test outside the approved policy."
+  };
+  return labels[category];
 }
 
 function VerificationResultSection({ verification }: { verification: NonNullable<Investigation["verification"]> }) {

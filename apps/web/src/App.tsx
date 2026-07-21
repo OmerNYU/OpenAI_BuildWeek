@@ -108,29 +108,51 @@ export function App({ pollIntervalMs = defaultPollIntervalMs }: { pollIntervalMs
 
   return (
     <main className="app-shell">
-      <header>
+      <header className="app-header">
+        <p className="eyebrow">Local-first investigation</p>
         <h1>FailSpec</h1>
-        <p>From vague failures to verified tests.</p>
+        <p className="lede">Turn a clear failure report into an evidence-backed Playwright regression result.</p>
       </header>
-      <section aria-labelledby="bug-intake-heading">
-        <h2 id="bug-intake-heading">Bug intake</h2>
+      <section className="intake-section" aria-labelledby="bug-intake-heading">
+        <SectionHeading number="01" title="Describe the failure" description="Tell FailSpec what happened and what you expected instead." id="bug-intake-heading" />
+        <aside className="trust-note" aria-label="Repository requirements">
+          <strong>Before you start</strong>
+          <span>Use a trusted, clean local Git repository. FailSpec investigates an isolated worktree and never changes your submitted source checkout.</span>
+        </aside>
         <BugReportForm
           key={formKey}
           disabled={creating || hasNonTerminalInvestigation}
+          submitting={creating}
           submissionError={creationError}
           onSubmit={submit}
         />
       </section>
       <section aria-labelledby="investigation-progress-heading">
-        <h2 id="investigation-progress-heading">Investigation progress</h2>
-        <InvestigationProgress investigation={investigation} pollingError={pollingError} />
+        <SectionHeading number="02" title="Follow the investigation" description="Watch the safe, server-reported stages as FailSpec works." id="investigation-progress-heading" />
+        <InvestigationProgress
+          investigation={investigation}
+          pollingError={pollingError}
+          pollIntervalMs={pollIntervalMs}
+        />
       </section>
       <section aria-labelledby="results-heading">
-        <h2 id="results-heading">Results</h2>
+        <SectionHeading number="03" title="Review the result" description="Separate file-backed analysis, execution evidence, and the verification verdict." id="results-heading" />
         <InvestigationResults investigation={investigation} />
       </section>
-      {investigation ? <button type="button" onClick={reset}>Start another investigation</button> : null}
+      {investigation ? <button className="secondary-button" type="button" onClick={reset}>Start another investigation</button> : null}
     </main>
+  );
+}
+
+function SectionHeading({ number, title, description, id }: { number: string; title: string; description: string; id: string }) {
+  return (
+    <div className="section-heading">
+      <span aria-hidden="true">{number}</span>
+      <div>
+        <h2 id={id}>{title}</h2>
+        <p>{description}</p>
+      </div>
+    </div>
   );
 }
 
