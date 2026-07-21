@@ -41,4 +41,14 @@ describe("Codex prompts", () => {
     expect(prompt).toContain("Checkout does not show the validation error.");
     expect(prompt).toContain('"generatedTestContent"');
   });
+
+  it("states the approved generated-test grammar", () => {
+    const prompt = buildTestGenerationPrompt(request, hypothesis);
+
+    expect(prompt).toContain("Import exactly { expect, test } from '@playwright/test'.");
+    expect(prompt).toContain("Every interaction and assertion must be awaited.");
+    expect(prompt).toContain("Allowed locator text assertions include toContainText");
+    expect(prompt).toContain("page.goto");
+    expect(prompt).toContain("expect(...).toContainText");
+  });
 });

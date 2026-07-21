@@ -1,4 +1,5 @@
 import type { InvestigationRequest, ReproductionHypothesis } from "@failspec/contracts";
+import { generatedTestPolicyDescription } from "../generated-test/index.js";
 
 const repositoryTestContext = `The repository path is a preflighted isolated worktree. Derive the Playwright config, test directory, start command, base URL, and existing Playwright test examples by read-only inspection. Do not invent values that are not present in the repository.`;
 
@@ -42,6 +43,7 @@ Rules:
 - Reuse the repository's existing Playwright conventions.
 - Generate exactly one minimal Playwright regression test.
 - Do not claim the bug is reproduced. Test execution and verdict classification happen elsewhere.
+${generatedTestPolicyDescription}
 
 Repository-test context:
 ${repositoryTestContext}

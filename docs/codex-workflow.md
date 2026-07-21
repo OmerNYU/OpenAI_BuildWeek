@@ -42,7 +42,9 @@ During `generating_test`, Codex receives the same isolated-worktree request and 
 { "generatedTestContent": "string" }
 ```
 
-The generated content must be valid TypeScript, import Playwright's `test`, declare exactly one non-shadowed `test()` call, contain a user interaction, and contain an assertion. The adapter makes one correction attempt only for malformed JSON, schema failures, or failed structural validation. If that corrected response is still invalid, the workflow stops with the validation error. It does not retry a failed Codex CLI process.
+Codex and generated-test staging use one shared, fail-closed policy. Generated content must use the exact unaliased `expect` and `test` imports from `@playwright/test`, declare one async test with the approved `page` and optional `request` fixtures, and contain only awaited direct calls from the approved Playwright surface. It must include an interaction and assertion. Navigation and request targets are restricted to relative paths or loopback HTTP(S) URLs. Locator text assertions may use `toContainText`.
+
+The policy is a static allowlist, not a runtime sandbox. Controlled execution remains responsible for process and network containment. The adapter makes one correction attempt only for malformed JSON, schema failures, or failed shared-policy validation. If that corrected response is still invalid, the workflow stops with the validation error. It does not retry a failed Codex CLI process.
 
 ## Stop rules
 
