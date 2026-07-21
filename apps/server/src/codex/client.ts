@@ -1,4 +1,5 @@
 import { extractCodexAgentMessage } from "./jsonl.js";
+import { CodexFailure } from "./failure.js";
 
 export interface CodexCliResponse {
   exitCode: number;
@@ -17,7 +18,7 @@ export class CodexJsonlClient {
     const response = await this.executor.execute(input);
 
     if (response.exitCode !== 0) {
-      throw new Error(response.stderr || "Codex CLI failed");
+      throw new CodexFailure("cli_failed");
     }
 
     return extractCodexAgentMessage(response.stdout);

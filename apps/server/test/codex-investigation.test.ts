@@ -2,6 +2,7 @@ import type { CodexAdapter } from "@failspec/core";
 import { describe, expect, it } from "vitest";
 import { CodexInvestigationAdapter } from "../src/codex/adapter.js";
 import { CodexJsonlClient } from "../src/codex/client.js";
+import { CodexFailure } from "../src/codex/failure.js";
 
 const request = {
   repositoryPath: "/tmp/checkout-app",
@@ -85,10 +86,10 @@ describe("CodexInvestigationAdapter", () => {
       content: generatedTestContent
     });
     expect(calls).toHaveLength(3);
-    expect(calls[2]?.prompt).toContain("Your previous response was invalid");
+    expect(calls[2]?.prompt).toContain("did not match the required contract");
   });
 
-  it("does not retry invalid analysis output", async () => {
+  it("retries invalid analysis output once", async () => {
     const calls: Array<{ cwd: string; prompt: string }> = [];
     const responses = [{ hypothesis: {}, evidence: [] }, analysis];
     const client = new CodexJsonlClient({
@@ -99,11 +100,12 @@ describe("CodexInvestigationAdapter", () => {
     });
     const adapter = new CodexInvestigationAdapter(client);
 
-    await expect(adapter.analyze(request)).rejects.toThrow();
-    expect(calls).toHaveLength(1);
+    await expect(adapter.analyze(request)).resolves.toEqual(analysis);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.prompt).toContain("did not match the required contract");
   });
 
-  it("rejects analysis with a missing evidence field without retrying", async () => {
+  it("returns a sanitized category after a second invalid analysis response", async () => {
     const calls: Array<{ cwd: string; prompt: string }> = [];
     const client = new CodexJsonlClient({
       async execute(input) {
@@ -113,7 +115,21 @@ describe("CodexInvestigationAdapter", () => {
     });
     const adapter: CodexAdapter = new CodexInvestigationAdapter(client);
 
-    await expect(adapter.analyze(request)).rejects.toThrow();
+    await expect(adapter.analyze(request)).rejects.toMatchObject({ category: "invalid_analysis_output" });
+    expect(calls).toHaveLength(2);
+  });
+
+  it("does not retry a Codex CLI failure or retain its diagnostic", async () => {
+    const calls: Array<{ cwd: string; prompt: string }> = [];
+    const client = new CodexJsonlClient({
+      async execute(input) {
+        calls.push(input);
+        return { exitCode: 1, stdout: "", stderr: "C:/secret/project credential failure" };
+      }
+    });
+    const adapter = new CodexInvestigationAdapter(client);
+
+    await expect(adapter.analyze(request)).rejects.toEqual(new CodexFailure("cli_failed"));
     expect(calls).toHaveLength(1);
   });
 });

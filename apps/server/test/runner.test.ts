@@ -455,6 +455,9 @@ function invalidCapabilityStatements(capability: typeof generatedTestCapabilitie
       `await ${receiver}.${capability.method}(target)`
     );
   }
+  if (capability.arguments === "role_options") {
+    statements.push(`await ${receiver}.${capability.method}('button', { includeHidden: true })`);
+  }
   if (capability.receiver === "expect") {
     statements.push(`await expect(${capability.expectationValue === "literal" ? "page.locator('button')" : "true"}).${capability.method}(${argument})`);
   }
@@ -493,9 +496,11 @@ function argumentsForCount(capability: typeof generatedTestCapabilities[number],
     ? ["'/api'", "'value'"]
     : capability.arguments === "selector_value"
       ? ["'button'", "'value'"]
-      : capability.arguments === "selector"
-        ? ["'button'"]
-        : ["'value'"];
+    : capability.arguments === "selector"
+      ? ["'button'"]
+      : capability.arguments === "role_options"
+        ? ["'button'", "{ name: 'Button' }"]
+      : ["'value'"];
   return Array.from({ length: count }, (_, index) => values[index] ?? "'extra'").join(", ");
 }
 
