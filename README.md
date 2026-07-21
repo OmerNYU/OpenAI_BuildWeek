@@ -80,6 +80,14 @@ npm run test
 npm run build
 ```
 
+Run the deterministic end-to-end fixture smoke flow with:
+
+```powershell
+npm run smoke
+```
+
+It exercises the public investigation API, persistence and reload, mock-mode verification, and local-style repository preflight, isolated worktree preparation, generated-test staging, cleanup, and verification classification without invoking the real Codex CLI or Playwright. See [the demo script](docs/demo-script.md) for the disposable-fixture setup and manual mock or local-mode walkthrough.
+
 ## Current scaffold limitations
 
 The frontend supports bug-report submission, investigation progress, polling through the existing API, and terminal summaries. The real Codex adapter is integrated behind `FAILSPEC_CODEX_MODE=local` and performs repository preflight plus analysis and test generation in an isolated worktree. Local orchestration stages the generated test, runs it through the controlled Playwright runner, persists sanitized execution facts and execution evidence separately, cleans up the workspace, and then invokes verification classification. Cleanup is in-process only and uses the existing worktree boundary; cleanup failure prevents a successful result. Verification outcomes come from the classifier rather than inference from Playwright status or an exit code. Mock mode remains deterministic and performs no real repository, staging, runner, or process work.
