@@ -1,93 +1,125 @@
 # FailSpec
 
-From vague failures to verified tests.
+FailSpec turns a bug report for a trusted local React or Next.js repository into one evidence-backed Playwright regression test. It is built for the moment when a report says "this is broken" but the team needs a reproducible failure before changing code.
 
-FailSpec is a local-first developer tool that turns a reported failure in a trusted local React or Next.js repository into an evidence-backed Playwright regression-test result.
+The MVP is deliberately local-first. It does not upload a repository or execute arbitrary remote code.
 
-## Prerequisites
+## What it does
 
-- Node.js 20 or newer
+1. Collects the reported and expected behaviour.
+2. Preflights a trusted local repository and creates an isolated Git worktree.
+3. Uses Codex to inspect the repository, form a reproduction hypothesis, and generate one constrained Playwright test.
+4. Stages and runs that test through a controlled runner.
+5. Stores sanitized execution evidence and returns a deterministic verdict: verified, partial evidence, not reproduced, or execution error.
+
+```mermaid
+flowchart LR
+  A[Developer bug report] --> B[React intake and progress UI]
+  B --> C[Express investigation API]
+  C --> D[Repository preflight and isolated worktree]
+  D --> E[Codex analysis and test generation]
+  E --> F[Generated-test staging]
+  F --> G[Controlled Playwright runner]
+  G --> H[Evidence sanitizer and verifier]
+  H --> I[Persisted investigation result]
+  I --> C
+  C --> B
+```
+
+## Requirements
+
+- Node.js `^20.19.0` or `>=22.12.0`
 - npm
+- For a real local investigation: an installed, authenticated Codex CLI and a trusted, clean Git repository that uses React or Next.js with Playwright configured
 
-## Installation
+FailSpec can be explored on macOS, Linux, or Windows anywhere the above requirements are available. The built-in mock mode needs no Codex installation and is the fastest way to review the UI and API flow.
 
-```powershell
-npm install
+## Install and run
+
+From a clean checkout:
+
+```bash
+npm ci
+npm run dev:server
 ```
 
-## Workspaces
+In a second terminal:
 
-- `apps/web`: React and Vite application shell.
-- `apps/server`: Express API scaffold.
-- `packages/contracts`: shared TypeScript types and Zod schemas.
-- `packages/core`: investigation lifecycle and typed mock adapter boundaries.
-
-See [the Codex investigation workflow](docs/codex-workflow.md) for the real Codex adapter boundary and generated-test rules.
-
-## Development
-
-```powershell
+```bash
 npm run dev:web
-npm run dev:server
 ```
 
-### Codex mode
+Open the Vite URL printed by the web server, normally `http://localhost:5173`.
 
-Mock mode is the default and does not require a Codex installation:
+### Run modes
 
-```powershell
-$env:FAILSPEC_CODEX_MODE = "mock"
-npm run dev:server
+Mock mode is the default. It demonstrates the investigation flow without Git preflight, Codex, generated-test staging, or Playwright execution.
+
+To set mock mode explicitly:
+
+```bash
+FAILSPEC_CODEX_MODE=mock npm run dev:server
 ```
 
-Local mode requires an installed and authenticated Codex CLI:
+For a real local investigation, start the server in local mode:
+
+```bash
+FAILSPEC_CODEX_MODE=local npm run dev:server
+```
+
+In Windows PowerShell, set the variable first:
 
 ```powershell
 $env:FAILSPEC_CODEX_MODE = "local"
 npm run dev:server
 ```
 
-Mock mode uses pass-through repository preparation: it performs no Git commands or preflight checks and uses the submitted repository path directly. Local mode runs repository preflight, prepares an isolated workspace, stages and runs the generated test, persists sanitized execution facts and structured execution evidence, and cleans up the workspace before invoking the deterministic verification classifier. The complete `VerificationResult` is persisted, while legacy explanation and next-step fields remain for compatibility. Mock mode injects a deterministic verified classifier without real repository, staging, or execution work. A classified `execution_error` is distinct from a safe workflow error; real local verified reproduction remains unavailable under the current affirmative-evidence policy. Classifier-generated path signals are made display-safe at the classifier boundary before `VerificationResult` is returned. Unsafe `failure_location` and `artifact_path` signals are suppressed by the classifier, while safe relative paths remain unchanged and ordered. Investigation orchestration validates and persists the classifier result without filtering or reinterpreting its supporting signals; no ad hoc server-side supporting-signal or path filtering exists. PR #53 is merged and is no longer a dependency.
+Local mode is only for trusted local repositories. It runs preflight, creates a FailSpec-owned isolated worktree, asks Codex for analysis and one generated test, runs the test through the controlled runner, cleans up its worktree, and classifies the resulting sanitized evidence.
 
-## Investigation API
+## Try the included sample
 
-The backend schedules investigation workflows in-process. Mock mode remains deterministic, while local mode uses the real Codex, staging, and controlled-runner boundaries:
+The repository includes `fixtures/buggy-checkout-app`, an intentionally broken checkout application. Its bug report is in [fixtures/buggy-checkout-app/bug-report.md](fixtures/buggy-checkout-app/bug-report.md): selecting quantity `2` still produces a `$12.00` charge instead of `$24.00`.
 
-- `POST /api/investigations`
-- `GET /api/investigations/:id`
+Do not submit the tracked fixture directly in local mode. Create a clean temporary copy, initialise and commit it as a local Git repository, install its dependencies, then submit that temporary path in FailSpec. The complete safe walkthrough, including the reference test and cleanup, is in [docs/demo-script.md](docs/demo-script.md).
 
-Create an investigation with:
+For a deterministic repository-wide smoke check that does not call the Codex CLI or launch a browser:
 
-```json
-{
-  "repositoryPath": "C:\\projects\\sample-app",
-  "bugTitle": "Checkout button does not complete purchase",
-  "bugDescription": "Submitting checkout leaves the user on the same page.",
-  "expectedBehavior": "The confirmation page should appear.",
-  "actualBehavior": "The page remains on checkout.",
-  "terminalLog": "Mock console output"
-}
-```
-
-`POST /api/investigations` returns the persisted initial `created` investigation. Clients retrieve progress through `GET /api/investigations/:id` until a terminal result includes the ordered timeline, deterministic hypothesis, generated test, execution result, verdict explanation, and recommended next step. Runtime records are stored as one JSON file per investigation under `.failspec/investigations/`. Scheduled work is not durable across server restarts; the MVP has no production job queue or recovery mechanism.
-
-## Verification
-
-```powershell
-npm run lint
-npm run typecheck
-npm run test
-npm run build
-```
-
-Run the deterministic end-to-end fixture smoke flow with:
-
-```powershell
+```bash
 npm run smoke
 ```
 
-It exercises the public investigation API, persistence and reload, mock-mode verification, and local-style repository preflight, isolated worktree preparation, generated-test staging, cleanup, and verification classification without invoking the real Codex CLI or Playwright. See [the demo script](docs/demo-script.md) for the disposable-fixture setup and manual mock or local-mode walkthrough.
+## Verification
 
-## Current scaffold limitations
+```bash
+npm run lint
+npm run typecheck
+npm test
+npm run build
+```
 
-The frontend supports bug-report submission, investigation progress, polling through the existing API, and terminal summaries. The real Codex adapter is integrated behind `FAILSPEC_CODEX_MODE=local` and performs repository preflight plus analysis and test generation in an isolated worktree. Local orchestration stages the generated test, runs it through the controlled Playwright runner, persists sanitized execution facts and execution evidence separately, cleans up the workspace, and then invokes verification classification. Cleanup is in-process only and uses the existing worktree boundary; cleanup failure prevents a successful result. Verification outcomes come from the classifier rather than inference from Playwright status or an exit code. Mock mode remains deterministic and performs no real repository, staging, runner, or process work.
+The test suite covers typed contracts, the investigation lifecycle, Codex-output validation, generated-test policy checks, controlled execution evidence, result rendering, and the fixture smoke flow.
+
+## Architecture and repository layout
+
+- `apps/web`: React and Vite intake, progress, and results UI.
+- `apps/server`: Express API, runtime dependency construction, Codex boundary, repository preparation, staging, and controlled runner.
+- `packages/contracts`: shared request, lifecycle, evidence, and result types.
+- `packages/core`: deterministic lifecycle and verification logic.
+- `fixtures/buggy-checkout-app`: the disposable demo fixture and reference Playwright test.
+
+See [docs/codex-workflow.md](docs/codex-workflow.md) for the constrained generated-test contract and [docs/decisions.md](docs/decisions.md) for MVP decisions and boundaries.
+
+## AI use
+
+FailSpec was developed with OpenAI Codex as a pair-programming collaborator. Codex was used throughout the build to inspect code, propose and implement narrowly scoped changes, write and review tests, run verification, and help maintain this documentation.
+
+GPT-5.6 was used within those Codex sessions for technical reasoning, debugging, design discussion, and documentation iteration. The team reviewed the resulting code and behaviour, made the product decisions, and kept the execution surface intentionally constrained. Codex does not automatically fix source code or create pull requests for a user.
+
+## MVP boundaries
+
+- Trusted local React or Next.js repositories only.
+- One generated Playwright regression test per investigation.
+- No hosted SaaS, authentication, team accounts, GitHub OAuth, or automatic bug fixes.
+- A generated test or non-zero process exit alone is not proof of a reproduced bug. The displayed verdict comes from structured execution evidence.
+
+Runtime investigation records are stored locally under `.failspec/investigations/`. Scheduled work is in-process only, so restarting the server does not recover an in-flight investigation.
