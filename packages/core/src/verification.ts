@@ -91,10 +91,15 @@ function supportingSignals(execution: ExecutionResult, evidence: ExecutionEviden
   add("assertion_failure", evidence.assertionFailureMessage);
   add("expected_value", evidence.expectedValue && `Expected value: ${evidence.expectedValue}`);
   add("actual_value", evidence.actualValue && `Actual value: ${evidence.actualValue}`);
-  add("failure_location", evidence.failureLocation && `Failure location: ${formatLocation(evidence.failureLocation)}`);
+  add(
+    "failure_location",
+    evidence.failureLocation && isSafeRelativePath(evidence.failureLocation.file)
+      ? `Failure location: ${formatLocation(evidence.failureLocation)}`
+      : undefined
+  );
   for (const message of evidence.consoleErrors) add("console_error", message);
   for (const message of evidence.pageErrors) add("page_error", message);
-  for (const path of evidence.artifactPaths) add("artifact_path", path);
+  for (const path of evidence.artifactPaths) add("artifact_path", isSafeRelativePath(path) ? path : undefined);
   return signals;
 }
 
@@ -104,4 +109,11 @@ function formatLocation(location: NonNullable<ExecutionEvidence["failureLocation
 
 function bounded(value: string): string {
   return value.slice(0, maximumSignalTextLength);
+}
+
+function isSafeRelativePath(value: string): boolean {
+  const hasSchemePrefix = /^[A-Za-z][A-Za-z0-9+.-]*:/.test(value);
+  const hasAbsolutePrefix = value.startsWith("/") || value.startsWith("\\") || /^[A-Za-z]:/.test(value);
+  const hasTraversalSegment = value.split(/[\\/]+/).some((segment) => segment === "..");
+  return !hasSchemePrefix && !hasAbsolutePrefix && !hasTraversalSegment;
 }

@@ -153,6 +153,50 @@ describe("verification classification", () => {
     expect(verificationResultSchema.parse(result)).toEqual(result);
   });
 
+  it.each([
+    ["a URI-scheme path", "file:///private/failspec/worktree/trace.zip"],
+    ["a slash-rooted path", "/private/failspec/worktree/trace.zip"],
+    ["a backslash-rooted path", "\\\\server\\share\\trace.zip"],
+    ["a Windows drive path", "C:\\Users\\hassan\\trace.zip"],
+    ["a slash traversal path", "test-results/../secret.zip"],
+    ["a backslash traversal path", "test-results\\..\\secret.zip"]
+  ])("omits %s from every path-derived signal", (_description, unsafePath) => {
+    const result = classify(input({
+      execution: { exitCode: 1 },
+      evidence: {
+        testStatus: "failed",
+        failureLocation: { file: unsafePath, line: 24, column: 9 },
+        artifactPaths: ["test-results/trace.zip", unsafePath, "test-results/screenshot.png"]
+      }
+    }));
+
+    expect(result.supportingSignals.some((signal) => signal.type === "failure_location")).toBe(false);
+    expect(result.supportingSignals.filter((signal) => signal.type === "artifact_path")).toEqual([
+      { type: "artifact_path", message: "test-results/trace.zip" },
+      { type: "artifact_path", message: "test-results/screenshot.png" }
+    ]);
+  });
+
+  it("preserves safe relative path signals unchanged and ordered", () => {
+    const result = classify(input({
+      execution: { exitCode: 1 },
+      evidence: {
+        testStatus: "failed",
+        failureLocation: { file: "tests/checkout.spec.ts", line: 24, column: 9 },
+        artifactPaths: ["test-results/trace.zip", ".failspec/runner/artifacts/screenshot.png"]
+      }
+    }));
+
+    expect(result.supportingSignals).toContainEqual({
+      type: "failure_location",
+      message: "Failure location: tests/checkout.spec.ts:24:9"
+    });
+    expect(result.supportingSignals.filter((signal) => signal.type === "artifact_path")).toEqual([
+      { type: "artifact_path", message: "test-results/trace.zip" },
+      { type: "artifact_path", message: ".failspec/runner/artifacts/screenshot.png" }
+    ]);
+  });
+
   it("caps presentable evidence without letting it affect the verdict", () => {
     const result = classify(input({
       execution: { exitCode: 1 },
