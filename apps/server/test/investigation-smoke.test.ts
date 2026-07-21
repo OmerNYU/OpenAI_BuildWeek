@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import request from "supertest";
@@ -25,6 +25,7 @@ import {
 import { createApp } from "../src/app.js";
 import { PassThroughRepositoryWorkspace, LocalRepositoryWorkspace } from "../src/repository/repository-workspace.js";
 import { cleanupIsolatedWorktree, preflightRepository, prepareIsolatedWorktree } from "../src/repository/index.js";
+import { PlaywrightRunnerAdapter, type RunnerOperations } from "../src/runner/playwright-runner.js";
 import { stageGeneratedTest } from "../src/runner/staging.js";
 import { createRuntimeDependencies } from "../src/runtime-dependencies.js";
 import type { WorkflowScheduler } from "../src/scheduling/workflow-scheduler.js";
@@ -102,38 +103,71 @@ describe("investigation smoke flow", () => {
   });
 
   it("runs a local-style fixture investigation through staging, cleanup, classification, and reload", async () => {
-    const scenario = await createLocalScenario(localPartialOutput());
-    const created = await startScenario(scenario);
+    const secretEnvironmentName = "FAILSPEC_SMOKE_ENV_SECRET";
+    const previousSecret = process.env[secretEnvironmentName];
+    const runner = createDeterministicPlaywrightRunner();
+    process.env[secretEnvironmentName] = runner.sentinels.environmentSecret;
 
-    await scenario.scheduler.runNext();
-    const completed = await getTerminalInvestigation(scenario.app, created.id);
-    await assertLocalScenarioSafety(scenario, created.id, completed);
+    try {
+      const scenario = await createLocalScenario(undefined, runner.adapter);
+      const created = await startScenario(scenario);
 
-    expect(scenario.events[0]).toBe("staging:staged");
-    expect(completed.timeline.map((event) => event.status)).toEqual([
-      "created", "preflight", "analyzing", "hypothesis_ready", "generating_test", "test_ready", "executing", "partial"
-    ]);
-    expect(completed.status).toBe("partial");
-    expect(completed.verification?.verdict).toBe("partial");
-    expect(completed.verification?.supportingSignals.map((signal) => signal.type)).toEqual([
-      "exit_code", "test_status", "test_title", "assertion_failure", "failure_location", "console_error", "artifact_path"
-    ]);
-    expect(completed.verdictExplanation).toBe(completed.verification?.explanation);
-    expect(completed.recommendedNextStep).toBe(completed.verification?.recommendedNextStep);
-    expect(scenario.codex.repositoryPaths).toEqual([scenario.worktreePath, scenario.worktreePath]);
-    expect(scenario.runner.repositoryPaths).toEqual([scenario.worktreePath]);
-    expect(scenario.runner.generatedTestPaths).toEqual(["tests/generated/failspec.generated.spec.ts"]);
-    expect(scenario.events).toEqual([
-      "staging:staged",
-      "execution-persisted",
-      "cleanup:cleaned",
-      "classifier",
-      "verification-persisted"
-    ]);
-    expect(scenario.classify).toHaveBeenCalledTimes(1);
-    expect(scenario.cleanupCalls).toBe(1);
-    expect(scenario.worktreePath).not.toBe(scenario.sourceRepositoryPath);
-    await expect(stat(scenario.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+      await scenario.scheduler.runNext();
+      const completed = await getTerminalInvestigation(scenario.app, created.id);
+      await assertLocalScenarioSafety(scenario, created.id, completed, [
+        ...runner.serializedCommands,
+        ...Object.values(runner.sentinels)
+      ]);
+
+      expect(scenario.events[0]).toBe("staging:staged");
+      expect(completed.timeline.map((event) => event.status)).toEqual([
+        "created", "preflight", "analyzing", "hypothesis_ready", "generating_test", "test_ready", "executing", "partial"
+      ]);
+      expect(completed.status).toBe("partial");
+      expect(completed.status).not.toBe("verified");
+      expect(completed.verification?.verdict).toBe("partial");
+      expect(completed.verification?.supportingSignals.map((signal) => signal.type)).toEqual([
+        "exit_code", "test_status", "test_title", "assertion_failure", "failure_location", "artifact_path"
+      ]);
+      expect(completed.execution).toMatchObject({
+        command: "controlled_playwright_generated_test",
+        stdout: "Playwright execution completed.",
+        stderr: "",
+        artifacts: [join(".failspec", "runner", "artifacts", "safe-trace.zip")]
+      });
+      expect(completed.executionEvidence?.artifactPaths).toEqual([join(".failspec", "runner", "artifacts", "safe-trace.zip")]);
+      expect(completed.verdictExplanation).toBe(completed.verification?.explanation);
+      expect(completed.recommendedNextStep).toBe(completed.verification?.recommendedNextStep);
+      expect(scenario.codex.repositoryPaths).toEqual([scenario.worktreePath, scenario.worktreePath]);
+      expect(runner.policyRepositoryPaths).toEqual([scenario.worktreePath]);
+      expect(runner.serializedCommands).toEqual([
+        JSON.stringify({ command: "npm", args: ["run", "dev", "--", "--hostname", "127.0.0.1", "--port", "43123"] }),
+        JSON.stringify({ command: "npm", args: ["run", "test:generated", "--", "--reporter=json", "--output", join(".failspec", "runner", "artifacts")] })
+      ]);
+      expect(runner.reportPaths).toEqual([join(scenario.worktreePath, ".failspec", "runner", "playwright-report.json")]);
+      expect(runner.childEnvironments).toHaveLength(2);
+      for (const environment of runner.childEnvironments) {
+        expect(environment[secretEnvironmentName]).toBeUndefined();
+        expect(Object.values(environment)).not.toContain(runner.sentinels.environmentSecret);
+      }
+      expect(scenario.events).toEqual([
+        "staging:staged",
+        "execution-persisted",
+        "cleanup:cleaned",
+        "classifier",
+        "verification-persisted"
+      ]);
+      expect(scenario.classify).toHaveBeenCalledTimes(1);
+      expect(scenario.cleanupCalls).toBe(1);
+      expect(scenario.worktreePath).not.toBe(scenario.sourceRepositoryPath);
+      await expect(stat(scenario.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (previousSecret === undefined) {
+        delete process.env[secretEnvironmentName];
+      } else {
+        process.env[secretEnvironmentName] = previousSecret;
+      }
+    }
   });
 
   it("persists a classifier-produced execution error without treating it as an operational failure", async () => {
@@ -317,7 +351,7 @@ async function assertSourceRepositoryUnchanged(sourceRepositoryPath: string, exp
 }
 
 async function createTemporaryRoot(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "failspec-investigation-smoke-"));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "failspec-investigation-smoke-")));
   temporaryRoots.push(root);
   return root;
 }
@@ -406,6 +440,102 @@ class ThrowingRunnerAdapter implements RunnerAdapter {
   async run(): Promise<RunnerOutput> {
     throw new Error("SMOKE_INTERNAL_RUNNER_FAILURE C:\\smoke-secret-worktree\\runner-stack");
   }
+}
+
+function createDeterministicPlaywrightRunner() {
+  const sentinels = {
+    rawStdout: "RAW_STDOUT_SENTINEL",
+    rawStderr: "RAW_STDERR_SENTINEL",
+    rawReporter: "RAW_REPORTER_JSON_SENTINEL",
+    unsafeAbsoluteArtifact: "UNSAFE_ABSOLUTE_ARTIFACT_SENTINEL",
+    unsafeTraversalArtifact: "UNSAFE_TRAVERSAL_ARTIFACT_SENTINEL",
+    unsafeExternalArtifactUrl: "UNSAFE_EXTERNAL_ARTIFACT_URL_SENTINEL",
+    unsafeFileArtifactUrl: "UNSAFE_FILE_ARTIFACT_URL_SENTINEL",
+    authenticationToken: "FAILSPEC_AUTH_TOKEN_SENTINEL",
+    environmentSecret: "FAILSPEC_ENV_SECRET_SENTINEL"
+  };
+  const serializedCommands: string[] = [];
+  const policyRepositoryPaths: string[] = [];
+  const childEnvironments: NodeJS.ProcessEnv[] = [];
+  const reportPaths: string[] = [];
+  const stop = vi.fn(async () => undefined);
+  const operations: RunnerOperations = {
+    createPolicy: vi.fn(async (repositoryPath) => {
+      policyRepositoryPaths.push(repositoryPath);
+      return {
+        status: "ready" as const,
+        policy: { repositoryPath, framework: "next" as const, startScript: "dev" as const, testScript: "test:generated" as const }
+      };
+    }),
+    planInstall: vi.fn(async () => ({ kind: "reuse" as const, logPath: ".failspec/npm-install.log" })),
+    appendInstallLog: vi.fn(async () => ({ kind: "appended" as const, logPath: ".failspec/npm-install.log" })),
+    recordInstall: vi.fn(async () => ({ kind: "recorded" as const })),
+    allocatePort: vi.fn(async () => 43123),
+    waitForReady: vi.fn(async () => true),
+    run: vi.fn(async (command, options) => {
+      serializedCommands.push(JSON.stringify(command));
+      if (!command.args.includes("test:generated")) {
+        throw new Error("Unexpected deterministic smoke command.");
+      }
+      const reportPath = options.env.PLAYWRIGHT_JSON_OUTPUT_FILE;
+      if (!reportPath) {
+        throw new Error("Missing deterministic reporter path.");
+      }
+      childEnvironments.push(options.env);
+      reportPaths.push(reportPath);
+      await writeFile(join(dirname(reportPath), "artifacts", "safe-trace.zip"), "safe trace", "utf8");
+      await writeFile(reportPath, reporterDocument(sentinels), "utf8");
+      return {
+        exitCode: 1,
+        stdout: sentinels.rawStdout,
+        stderr: sentinels.rawStderr,
+        timedOut: false,
+        durationMs: 1
+      };
+    }),
+    start: vi.fn(async (command, options) => {
+      serializedCommands.push(JSON.stringify(command));
+      childEnvironments.push(options.env);
+      return { isRunning: () => true, stop };
+    })
+  };
+
+  return {
+    adapter: new PlaywrightRunnerAdapter(operations),
+    childEnvironments,
+    policyRepositoryPaths,
+    serializedCommands,
+    reportPaths,
+    sentinels
+  };
+}
+
+function reporterDocument(sentinels: ReturnType<typeof createDeterministicPlaywrightRunner>["sentinels"]): string {
+  return JSON.stringify({
+    ignoredReporterMetadata: sentinels.rawReporter,
+    suites: [{
+      specs: [{
+        title: "generated checkout",
+        tests: [{
+          results: [{
+            status: "failed",
+            errors: [{
+              message: "Expected checkout total to be $24.00.",
+              location: { file: "tests/generated/failspec.generated.spec.ts", line: 6, column: 3 }
+            }],
+            attachments: [
+              { path: "safe-trace.zip" },
+              { path: `../${sentinels.unsafeTraversalArtifact}/trace.zip` },
+              { path: `C:\\private\\${sentinels.unsafeAbsoluteArtifact}\\trace.zip` },
+              { path: `/private/${sentinels.unsafeAbsoluteArtifact}/trace.zip` },
+              { path: `file:///private/${sentinels.unsafeFileArtifactUrl}/trace.zip` },
+              { path: `https://example.invalid/${sentinels.unsafeExternalArtifactUrl}/trace.zip?token=${sentinels.authenticationToken}` }
+            ]
+          }]
+        }]
+      }]
+    }]
+  });
 }
 
 function localPartialOutput(): RunnerOutput {
