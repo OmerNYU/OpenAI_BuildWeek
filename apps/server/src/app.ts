@@ -4,7 +4,8 @@ import { createInvestigationsRouter } from "./routes/investigations.js";
 import {
   InvestigationService,
   type GeneratedTestStager,
-  type InvestigationRuntimeMode
+  type InvestigationRuntimeMode,
+  type VerificationClassifier
 } from "./services/investigation-service.js";
 import type { RepositoryWorkspace } from "./repository/repository-workspace.js";
 import type { WorkflowScheduler } from "./scheduling/workflow-scheduler.js";
@@ -17,6 +18,7 @@ export interface AppDependencies {
   scheduler: WorkflowScheduler;
   repositoryWorkspace: RepositoryWorkspace;
   generatedTestStager: GeneratedTestStager;
+  verificationClassifier: VerificationClassifier;
   mode: InvestigationRuntimeMode;
 }
 
@@ -29,7 +31,7 @@ export function createApp(dependencies: AppDependencies) {
     dependencies.scheduler,
     dependencies.repositoryWorkspace,
     dependencies.generatedTestStager,
-    dependencies.mode
+    dependencies.verificationClassifier
   );
 
   app.use(express.json());

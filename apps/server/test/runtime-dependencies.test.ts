@@ -153,7 +153,7 @@ describe("runtime dependency construction", () => {
 
     await scheduler.runAll();
     const completed = await request(app).get(`/api/investigations/${response.body.id}`);
-    expect(completed.body.status).toBe("execution_error");
+    expect(completed.body.status).toBe("not_reproduced");
     expect(completed.body.hypothesis).toEqual(hypothesis);
     expect(completed.body.analysisEvidence).toEqual([
       {
@@ -171,10 +171,11 @@ describe("runtime dependency construction", () => {
     expect(analysisCall?.[0].prompt).toContain(requestBody.bugTitle);
     expect(generationCall?.[0].prompt).toContain(requestBody.bugTitle);
     expect(generationCall?.[0].prompt).not.toBe(analysisCall?.[0].prompt);
-    expect(completed.body.verdictExplanation).toContain("Execution evidence was collected");
+    expect(completed.body.verification).toMatchObject({ verdict: "not_reproduced" });
+    expect(completed.body.verdictExplanation).toContain("without reproducing");
     expect(completed.body.timeline.at(-1)).toMatchObject({
-      status: "execution_error",
-      message: "Execution evidence was collected, but verification is unavailable."
+      status: "not_reproduced",
+      message: "The generated test did not reproduce the reported failure."
     });
 
     const reloaded = await request(app).get(`/api/investigations/${response.body.id}`);
@@ -182,6 +183,7 @@ describe("runtime dependency construction", () => {
     expect(reloaded.body.hypothesis).toEqual(hypothesis);
     expect(reloaded.body.generatedTestContent).toBe(generatedTestContent);
     expect(reloaded.body.executionEvidence).toMatchObject({ testStatus: "passed" });
+    expect(reloaded.body.verification).toMatchObject({ verdict: "not_reproduced" });
   });
 
   it("converts local analysis failure to a sanitized execution error", async () => {

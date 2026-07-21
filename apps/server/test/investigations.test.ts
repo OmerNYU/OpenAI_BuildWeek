@@ -9,7 +9,8 @@ import type {
   CodexAnalysisResult,
   ReproductionHypothesis,
   RunnerOutput,
-  GeneratedTestStagingResult
+  GeneratedTestStagingResult,
+  VerificationResult
 } from "@failspec/contracts";
 import { codexAnalysisResultSchema } from "@failspec/contracts";
 import {
@@ -19,7 +20,8 @@ import {
   type GenerateTestInput,
   type GeneratedTest,
   type RunnerAdapter,
-  type RunnerInput
+  type RunnerInput,
+  type VerificationInput
 } from "@failspec/core";
 import { createApp } from "../src/app.js";
 import type { WorkflowScheduler } from "../src/scheduling/workflow-scheduler.js";
@@ -33,7 +35,8 @@ import { JsonInvestigationStore } from "../src/storage/json-investigation-store.
 import type { InvestigationStore } from "../src/storage/investigation-store.js";
 import type {
   GeneratedTestStager,
-  InvestigationRuntimeMode
+  InvestigationRuntimeMode,
+  VerificationClassifier
 } from "../src/services/investigation-service.js";
 
 const validRequest: InvestigationRequest = {
@@ -140,7 +143,7 @@ describe("investigation API", () => {
     expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
   });
 
-  it("stages a local generated test before execution and persists evidence without verifying", async () => {
+  it("stages, runs, and classifies a local generated test after cleanup", async () => {
     const scheduler = new ManualWorkflowScheduler();
     const workspacePath = "C:/failspec/worktrees/checkout";
     const repositoryWorkspace = createWorkspace({ workspacePath });
@@ -156,12 +159,17 @@ describe("investigation API", () => {
     const runnerAdapter: RunnerAdapter & { run: ReturnType<typeof vi.fn> } = {
       run: vi.fn(async () => localRunnerOutput())
     };
+    const classify = vi.fn((input: VerificationInput): VerificationResult => {
+      void input;
+      return classifiedVerification("not_reproduced");
+    });
     const app = createTestApp({
       scheduler,
       repositoryWorkspace,
       generatedTestStager: stage,
       runnerAdapter,
-      mode: "local"
+      mode: "local",
+      verificationClassifier: classify
     });
 
     const created = await request(app).post("/api/investigations").send(validRequest);
@@ -175,7 +183,7 @@ describe("investigation API", () => {
       generatedTest: { content: stagedContents[0], path: stagedGeneratedTestPath }
     });
     expect(stage.mock.invocationCallOrder[0]).toBeLessThan(runnerAdapter.run.mock.invocationCallOrder[0]);
-    expect(completed.body.status).toBe("execution_error");
+    expect(completed.body.status).toBe("not_reproduced");
     expect(completed.body.timeline.map((event: { status: string }) => event.status)).toEqual([
       "created",
       "preflight",
@@ -184,15 +192,146 @@ describe("investigation API", () => {
       "generating_test",
       "test_ready",
       "executing",
-      "execution_error"
+      "not_reproduced"
     ]);
     expect(completed.body.request.repositoryPath).toBe(validRequest.repositoryPath);
     expect(completed.body.generatedTestPath).toBe(stagedGeneratedTestPath);
     expect(completed.body.execution).toEqual(localRunnerOutput().execution);
     expect(completed.body.executionEvidence).toEqual(localRunnerOutput().evidence);
-    expect(completed.body.verdictExplanation).toContain("Execution evidence was collected");
+    expect(completed.body.verification).toEqual(classifiedVerification("not_reproduced"));
+    expect(completed.body.verdictExplanation).toBe(classifiedVerification("not_reproduced").explanation);
+    expect(classify).toHaveBeenCalledWith({
+      hypothesis: expect.objectContaining({ summary: "Mock hypothesis for the reported failure." }),
+      execution: localRunnerOutput().execution,
+      evidence: localRunnerOutput().evidence
+    });
+    expect(runnerAdapter.run.mock.invocationCallOrder[0]).toBeLessThan(repositoryWorkspace.cleanup.mock.invocationCallOrder[0]);
+    expect(repositoryWorkspace.cleanup.mock.invocationCallOrder[0]).toBeLessThan(classify.mock.invocationCallOrder[0]);
     expect(repositoryWorkspace.cleanup).toHaveBeenCalledWith(created.body.id);
     expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails safely when classification throws after cleanup", async () => {
+    const scheduler = new ManualWorkflowScheduler();
+    const repositoryWorkspace = createWorkspace();
+    const classify = vi.fn(() => { throw new Error("C:/secret/worktree/classifier failure"); });
+    const app = createTestApp({
+      scheduler,
+      repositoryWorkspace,
+      runnerAdapter: new MockRunnerAdapter(localRunnerOutput()),
+      generatedTestStager: successfulGeneratedTestStager,
+      verificationClassifier: classify
+    });
+
+    const created = await request(app).post("/api/investigations").send(validRequest);
+    await scheduler.runNext();
+    const completed = await request(app).get(`/api/investigations/${created.body.id}`);
+
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(completed.body.status).toBe("execution_error");
+    expect(completed.body.verification).toBeUndefined();
+    expect(completed.body.execution).toEqual(localRunnerOutput().execution);
+    expect(completed.body.executionEvidence).toEqual(localRunnerOutput().evidence);
+    expect(completed.body.verdictExplanation).toContain("could not be classified safely");
+    expect(JSON.stringify(completed.body)).not.toContain("C:/secret/worktree");
+    expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails safely when classification returns malformed sensitive output", async () => {
+    const scheduler = new ManualWorkflowScheduler();
+    const repositoryWorkspace = createWorkspace();
+    const classify = vi.fn(() => ({
+      verdict: "invalid-verdict",
+      explanation: "C:/secret/worktree/schema detail",
+      recommendedNextStep: "internal classifier detail",
+      supportingSignals: [{ type: "", message: "C:/secret/worktree/signal" }]
+    }) as unknown as VerificationResult);
+    const app = createTestApp({
+      scheduler,
+      repositoryWorkspace,
+      runnerAdapter: new MockRunnerAdapter(localRunnerOutput()),
+      generatedTestStager: successfulGeneratedTestStager,
+      verificationClassifier: classify
+    });
+
+    const created = await request(app).post("/api/investigations").send(validRequest);
+    await scheduler.runNext();
+    const completed = await request(app).get(`/api/investigations/${created.body.id}`);
+
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
+    expect(completed.body.status).toBe("execution_error");
+    expect(completed.body.verification).toBeUndefined();
+    expect(completed.body.execution).toEqual(localRunnerOutput().execution);
+    expect(completed.body.executionEvidence).toEqual(localRunnerOutput().evidence);
+    expect(completed.body.verdictExplanation).toContain("The execution evidence could not be classified safely.");
+    expect(JSON.stringify(completed.body)).not.toContain("invalid-verdict");
+    expect(JSON.stringify(completed.body)).not.toContain("C:/secret/worktree");
+  });
+
+  it("persists execution evidence before cleanup and verification after classification", async () => {
+    const scheduler = new ManualWorkflowScheduler();
+    const events: string[] = [];
+    const records = new Map<string, Investigation>();
+    const store: InvestigationStore = {
+      async save(investigation) {
+        events.push(investigation.verification ? "terminal-save" : investigation.execution ? "execution-save" : "save");
+        records.set(investigation.id, structuredClone(investigation));
+      },
+      async getById(id) { return records.get(id); }
+    };
+    const repositoryWorkspace = createWorkspace({
+      cleanup: { status: "cleaned" }
+    });
+    repositoryWorkspace.cleanup.mockImplementation(async () => {
+      events.push("cleanup");
+      return { status: "cleaned" };
+    });
+    const runnerAdapter: RunnerAdapter = {
+      async run() {
+        events.push("runner");
+        return localRunnerOutput();
+      }
+    };
+    const classify = vi.fn((input: VerificationInput) => {
+      events.push("classifier");
+      expect(input.execution).toEqual(localRunnerOutput().execution);
+      expect(input.evidence).toEqual(localRunnerOutput().evidence);
+      return classifiedVerification("not_reproduced");
+    });
+    const app = createTestApp({ store, scheduler, repositoryWorkspace, runnerAdapter, generatedTestStager: successfulGeneratedTestStager, verificationClassifier: classify });
+
+    await request(app).post("/api/investigations").send(validRequest).then(() => scheduler.runNext());
+
+    expect(events.filter((event) => ["runner", "execution-save", "cleanup", "classifier", "terminal-save"].includes(event))).toEqual([
+      "runner", "execution-save", "cleanup", "classifier", "terminal-save"
+    ]);
+    expect(classify).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["partial", "execution_error"] as const)("persists a valid classified %s terminal result", async (verdict) => {
+    const scheduler = new ManualWorkflowScheduler();
+    const app = createTestApp({
+      scheduler,
+      runnerAdapter: new MockRunnerAdapter(localRunnerOutput()),
+      generatedTestStager: successfulGeneratedTestStager,
+      verificationClassifier: () => classifiedVerification(verdict)
+    });
+
+    const created = await request(app).post("/api/investigations").send(validRequest);
+    await scheduler.runNext();
+    const completed = await request(app).get(`/api/investigations/${created.body.id}`);
+
+    expect(completed.body.status).toBe(verdict);
+    expect(completed.body.verification).toEqual(classifiedVerification(verdict));
+    expect(completed.body.verdictExplanation).toBe(classifiedVerification(verdict).explanation);
+    expect(completed.body.recommendedNextStep).toBe(classifiedVerification(verdict).recommendedNextStep);
+    expect(completed.body.timeline.at(-1)).toMatchObject({
+      status: verdict,
+      message: verdict === "partial"
+        ? "Investigation completed with partial evidence."
+        : "Execution evidence could not be classified as a valid reproduction."
+    });
   });
 
   it("persists an intermediate analyzing state while Codex analysis is still active", async () => {
@@ -411,12 +550,14 @@ describe("investigation API", () => {
     const generatedTestStager: GeneratedTestStager = async () => stagingResult;
     const runnerAdapter = new MockRunnerAdapter();
     const run = vi.spyOn(runnerAdapter, "run");
+    const classify = vi.fn(mockVerificationClassifier);
     const app = createTestApp({
       scheduler,
       repositoryWorkspace,
       generatedTestStager,
       runnerAdapter,
-      mode: "local"
+      mode: "local",
+      verificationClassifier: classify
     });
 
     const created = await request(app).post("/api/investigations").send(validRequest);
@@ -431,6 +572,7 @@ describe("investigation API", () => {
     expect(completed.body.execution).toBeUndefined();
     expect(completed.body.timeline.map((event: { status: string }) => event.status)).not.toContain("test_ready");
     expect(run).not.toHaveBeenCalled();
+    expect(classify).not.toHaveBeenCalled();
     expect(JSON.stringify(completed.body)).not.toContain(stagingResult.failure.code);
     expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
   });
@@ -449,7 +591,8 @@ describe("investigation API", () => {
       repositoryWorkspace,
       generatedTestStager: successfulGeneratedTestStager,
       runnerAdapter,
-      mode: "local"
+      mode: "local",
+      verificationClassifier: () => classifiedVerification("execution_error")
     });
 
     const created = await request(app).post("/api/investigations").send(validRequest);
@@ -482,7 +625,8 @@ describe("investigation API", () => {
       repositoryWorkspace,
       generatedTestStager: successfulGeneratedTestStager,
       runnerAdapter,
-      mode: "local"
+      mode: "local",
+      verificationClassifier: () => classifiedVerification("execution_error")
     });
 
     const created = await request(app).post("/api/investigations").send(validRequest);
@@ -492,7 +636,8 @@ describe("investigation API", () => {
     expect(completed.body.status).toBe("execution_error");
     expect(completed.body.execution).toEqual(output.execution);
     expect(completed.body.executionEvidence).toEqual(output.evidence);
-    expect(completed.body.verdictExplanation).toContain("Execution evidence was collected");
+    expect(completed.body.verification).toEqual(classifiedVerification("execution_error"));
+    expect(completed.body.verdictExplanation).toBe(classifiedVerification("execution_error").explanation);
     expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
   });
 
@@ -701,6 +846,7 @@ function createTestApp(overrides: Partial<{
   scheduler: WorkflowScheduler;
   repositoryWorkspace: RepositoryWorkspace;
   generatedTestStager: GeneratedTestStager;
+  verificationClassifier: VerificationClassifier;
   mode: InvestigationRuntimeMode;
 }> = {}) {
   return createApp({
@@ -710,6 +856,7 @@ function createTestApp(overrides: Partial<{
     scheduler: overrides.scheduler ?? new ManualWorkflowScheduler(),
     repositoryWorkspace: overrides.repositoryWorkspace ?? new PassThroughRepositoryWorkspace(),
     generatedTestStager: overrides.generatedTestStager ?? mockGeneratedTestStager,
+    verificationClassifier: overrides.verificationClassifier ?? mockVerificationClassifier,
     mode: overrides.mode ?? "mock"
   });
 }
@@ -722,6 +869,22 @@ const mockGeneratedTestStager: GeneratedTestStager = async (
   void content;
   return { status: "staged", stagedTestPath: "tests/failspec.mock.spec.ts" };
 };
+
+const mockVerificationClassifier: VerificationClassifier = () => ({
+  verdict: "verified",
+  explanation: "The deterministic mock runner returned the expected reproduction signal.",
+  recommendedNextStep: "Review the generated regression test before running it against a real repository.",
+  supportingSignals: [{ type: "mock_verification", message: "Deterministic mock verification completed." }]
+});
+
+function classifiedVerification(verdict: VerificationResult["verdict"]): VerificationResult {
+  return {
+    verdict,
+    explanation: `Classifier explanation for ${verdict}.`,
+    recommendedNextStep: `Classifier next step for ${verdict}.`,
+    supportingSignals: [{ type: "classifier", message: `Classifier signal for ${verdict}.` }]
+  };
+}
 
 const stagedGeneratedTestPath = "tests/generated/failspec.generated.spec.ts";
 

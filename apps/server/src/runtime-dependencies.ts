@@ -1,6 +1,12 @@
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { MockCodexAdapter, MockRunnerAdapter, type CodexAdapter, type RunnerAdapter } from "@failspec/core";
+import {
+  classifyVerification,
+  MockCodexAdapter,
+  MockRunnerAdapter,
+  type CodexAdapter,
+  type RunnerAdapter
+} from "@failspec/core";
 import type { AppDependencies } from "./app.js";
 import { CodexInvestigationAdapter } from "./codex/adapter.js";
 import { CodexJsonlClient, type CodexCliExecutor } from "./codex/client.js";
@@ -15,7 +21,8 @@ import { PlaywrightRunnerAdapter } from "./runner/playwright-runner.js";
 import { stageGeneratedTest } from "./runner/staging.js";
 import type {
   GeneratedTestStager,
-  InvestigationRuntimeMode
+  InvestigationRuntimeMode,
+  VerificationClassifier
 } from "./services/investigation-service.js";
 import { JsonInvestigationStore } from "./storage/json-investigation-store.js";
 
@@ -42,10 +49,24 @@ export function createRuntimeDependencies(
     codexAdapter,
     runnerAdapter: createRunnerAdapter(mode),
     generatedTestStager: createGeneratedTestStager(mode),
+    verificationClassifier: createVerificationClassifier(mode),
     scheduler: new InProcessWorkflowScheduler(),
     repositoryWorkspace: options.repositoryWorkspace ?? createRepositoryWorkspace(mode)
   };
 }
+
+function createVerificationClassifier(mode: CodexMode): VerificationClassifier {
+  return mode === "local" ? classifyVerification : mockVerificationClassifier;
+}
+
+const mockVerificationClassifier: VerificationClassifier = () => ({
+  verdict: "verified",
+  explanation: "The deterministic mock runner returned the expected reproduction signal.",
+  recommendedNextStep: "Review the generated regression test before running it against a real repository.",
+  supportingSignals: [
+    { type: "mock_verification", message: "Deterministic mock verification completed." }
+  ]
+});
 
 function createRunnerAdapter(mode: CodexMode): RunnerAdapter {
   return mode === "local" ? new PlaywrightRunnerAdapter() : new MockRunnerAdapter();

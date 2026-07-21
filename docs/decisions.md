@@ -133,3 +133,13 @@ Record only decisions confirmed by the team. Do not add speculative or unapprove
 - **Rationale:** Playwright status, assertion details, errors, and artifacts provide evidence without constraining generated-test structure. A non-zero exit code is insufficient by itself.
 - **Consequences:** Runner implementations record facts only. Execution-evidence schemas validate evidence structure and limit individual message fields, but do not sanitize collected content; the real runner must sanitize it before constructing `RunnerOutput`. The controlled runner stores its JSON report, process logs, and Playwright artifacts under `.failspec/runner/` in the owned worktree and returns only bounded, sanitized, worktree-relative facts. Preflight, worktree, and staging contracts expose stable failure codes only.
 - **Owners:** Persons 1, 2, and 3
+
+### Verification classification orchestration
+
+- **Date:** 2026-07-21
+- **Decision:** Classify validated execution evidence only after it is persisted and the prepared workspace is successfully cleaned up; persist the complete `VerificationResult` and mirror its explanation and next step for compatibility.
+- **Context:** Integrate deterministic verification without treating raw execution facts as a verdict.
+- **Alternatives considered:** Infer a verdict directly from Playwright status or exit code.
+- **Rationale:** Preserve fail-closed workflow failures while allowing a classifier-produced `execution_error` to be a valid terminal result.
+- **Consequences:** Local mode uses the merged classifier; mock mode injects a deterministic verified classifier. Classifier-generated path signals are made display-safe at the classifier boundary before `VerificationResult` is returned: unsafe `failure_location` and `artifact_path` signals are suppressed, while safe relative paths remain unchanged and ordered. Investigation orchestration validates and persists the classifier result without filtering or reinterpreting its supporting signals; no ad hoc server-side supporting-signal or path filtering exists. PR #53 is merged and is no longer a dependency.
+- **Owners:** Omer and Hassan; original execution/evidence architecture credited to Person 3.

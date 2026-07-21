@@ -75,6 +75,25 @@ describe("investigationSchema", () => {
 
     expect(result.executionEvidence?.testStatus).toBe("failed");
   });
+
+  it("accepts optional structured verification and preserves supporting-signal order", () => {
+    const result = investigationSchema.parse({
+      id: "investigation-3",
+      status: "partial",
+      request: { repositoryPath: "C:/repos/example", bugTitle: "Checkout fails", bugDescription: "Checkout does not complete.", expectedBehavior: "Checkout completes.", actualBehavior: "Checkout remains open." },
+      timeline: [{ status: "partial", at: "2026-07-19T00:00:00.000Z", message: "Investigation completed with partial evidence." }],
+      createdAt: "2026-07-19T00:00:00.000Z",
+      updatedAt: "2026-07-19T00:00:00.000Z",
+      verification: {
+        verdict: "partial",
+        explanation: "Evidence is incomplete.",
+        recommendedNextStep: "Refine the scenario.",
+        supportingSignals: [{ type: "first", message: "First signal." }, { type: "second", message: "Second signal." }]
+      }
+    });
+
+    expect(result.verification?.supportingSignals.map((signal) => signal.type)).toEqual(["first", "second"]);
+  });
 });
 
 describe("Codex analysis contracts", () => {
@@ -203,6 +222,8 @@ describe("execution contracts", () => {
         evidence: { consoleErrors: [], pageErrors: [], artifactPaths: [], testStatus: "broken" }
       }).success
     ).toBe(false);
+    expect(verificationResultSchema.safeParse({ verdict: "verified", explanation: "Valid.", recommendedNextStep: "Continue.", supportingSignals: [{ type: "", message: "Invalid signal." }] }).success).toBe(false);
+    expect(verificationResultSchema.safeParse({ verdict: "verified", explanation: "Valid.", recommendedNextStep: "Continue.", supportingSignals: [{ type: "signal", message: "x".repeat(2_001) }] }).success).toBe(false);
     expect(
       verificationResultSchema.safeParse({
         verdict: "failed",

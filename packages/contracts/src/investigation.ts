@@ -223,6 +223,7 @@ export const investigationResultSchema = z.object({
   generatedTestContent: z.string().optional(),
   execution: executionResultSchema.optional(),
   executionEvidence: executionEvidenceSchema.optional(),
+  verification: verificationResultSchema.optional(),
   verdictExplanation: z.string().optional(),
   recommendedNextStep: z.string().optional()
 });
