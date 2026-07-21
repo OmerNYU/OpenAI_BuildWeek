@@ -65,6 +65,8 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 
 .execution-evidence-details dd { margin: 0 0 0.5rem; }
 
+.execution-evidence-message { overflow-wrap: anywhere; white-space: pre-wrap; }
+
 .execution-evidence-list { padding-left: 1.4rem; }
 
 .verification-result { border-top: 1px solid #d9e1e8; margin-top: 1rem; padding-top: 1rem; }

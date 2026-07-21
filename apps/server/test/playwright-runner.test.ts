@@ -537,6 +537,20 @@ describe("controlled Playwright runner", () => {
     expect(output.evidence.assertionFailureMessage).toContain("http://127.0.0.1:43123/checkout");
   });
 
+  it("removes terminal ANSI formatting from structured evidence", async () => {
+    const worktree = await createWorktree();
+    const output = await new PlaywrightRunnerAdapter(fakeOperations(projectsReport([{
+      project: "chromium",
+      results: [{
+        status: "failed",
+        retry: 0,
+        errors: [{ message: "\u001b[31mExpected charged total\u001b[0m\nReceived charged total" }]
+      }]
+    }]))).run(input(worktree));
+
+    expect(output.evidence.assertionFailureMessage).toBe("Expected charged total\nReceived charged total");
+  });
+
   it("does not delete or overwrite repository-provided runner artifacts", async () => {
     const worktree = await createWorktree();
     const sentinel = join(worktree, ".failspec", "runner", "artifacts", "sentinel.txt");

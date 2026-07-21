@@ -504,7 +504,7 @@ function text(value: unknown, worktreePath: string): string | undefined {
     return undefined;
   }
   const urls: string[] = [];
-  const protectedUrls = value.replace(/https?:\/\/[^\s]+/g, (url) => {
+  const protectedUrls = stripTerminalFormatting(value).replace(/https?:\/\/[^\s]+/g, (url) => {
     const loopbackUrl = localUrl(url);
     return loopbackUrl ? `[[FAILSPEC_URL_${urls.push(loopbackUrl) - 1}]]` : "[url]";
   });
@@ -516,6 +516,13 @@ function text(value: unknown, worktreePath: string): string | undefined {
     .trim()
     .slice(0, maximumEvidenceTextLength);
   return sanitized || undefined;
+}
+
+function stripTerminalFormatting(value: string): string {
+  return value
+    .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, "")
+    .replace(/\u001B\[[0-?]*[ -\/]*[@-~]/g, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
 }
 
 function localUrl(value: string): string | undefined {

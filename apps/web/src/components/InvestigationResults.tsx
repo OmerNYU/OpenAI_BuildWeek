@@ -104,7 +104,7 @@ function ExecutionEvidenceSection({ evidence }: { evidence?: Investigation["exec
           {hasDefinitionDetails ? <dl className="execution-evidence-details">
             {evidence.testTitle !== undefined ? <><dt>Test title</dt><dd>{evidence.testTitle}</dd></> : null}
             {evidence.testStatus !== undefined ? <><dt>Test status</dt><dd>{formatTestStatus(evidence.testStatus)}</dd></> : null}
-            {evidence.assertionFailureMessage !== undefined ? <><dt>Assertion failure</dt><dd>{evidence.assertionFailureMessage}</dd></> : null}
+            {evidence.assertionFailureMessage !== undefined ? <><dt>Assertion failure</dt><dd className="execution-evidence-message">{evidence.assertionFailureMessage}</dd></> : null}
             {evidence.expectedValue !== undefined ? <><dt>Expected value</dt><dd>{evidence.expectedValue}</dd></> : null}
             {evidence.actualValue !== undefined ? <><dt>Actual value</dt><dd>{evidence.actualValue}</dd></> : null}
             {safeFailureLocation ? <><dt>Failure location</dt><dd><code>{safeFailureLocation.file}</code>{safeFailureLocation.line !== undefined ? `:${safeFailureLocation.line}` : ""}{safeFailureLocation.column !== undefined ? `:${safeFailureLocation.column}` : ""}</dd></> : null}

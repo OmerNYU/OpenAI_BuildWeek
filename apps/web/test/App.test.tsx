@@ -182,6 +182,7 @@ describe("App", () => {
     expect(within(evidence).getByText("checkout displays validation")).toBeTruthy();
     expect(within(evidence).getByText("timed out")).toBeTruthy();
     expect(within(evidence).getByText("Expected validation message to be visible.")).toBeTruthy();
+    expect(within(evidence).getByText("Expected validation message to be visible.").classList.contains("execution-evidence-message")).toBe(true);
     expect(within(evidence).getByText("Validation message")).toBeTruthy();
     expect(within(evidence).getByText("No message")).toBeTruthy();
     expect(within(evidence).getByText("tests/checkout.spec.ts", { selector: "code" })).toBeTruthy();
