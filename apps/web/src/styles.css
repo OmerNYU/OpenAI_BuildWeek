@@ -57,6 +57,16 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 
 .analysis-evidence-list { padding-left: 1.4rem; }
 
+.execution-evidence { border-top: 1px solid #d9e1e8; margin-top: 1rem; padding-top: 1rem; }
+
+.execution-evidence-intro { color: #52606d; }
+
+.execution-evidence-details { display: grid; gap: 0.25rem; }
+
+.execution-evidence-details dd { margin: 0 0 0.5rem; }
+
+.execution-evidence-list { padding-left: 1.4rem; }
+
 @media (max-width: 640px) {
   .form-grid { grid-template-columns: 1fr; }
 }

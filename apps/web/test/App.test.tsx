@@ -147,6 +147,121 @@ describe("App", () => {
     expect(within(evidence).getByRole("listitem").textContent).toContain("The missing validation state is preserved after submission.");
   });
 
+  it("renders complete structured execution evidence without exposing raw execution data", async () => {
+    const sensitiveCommand = "npx playwright test --secret-command";
+    const sensitiveStdout = "raw runner stdout secret";
+    const sensitiveStderr = "raw runner stderr secret";
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
+      executionEvidence: {
+        testTitle: "checkout displays validation",
+        testStatus: "timedOut",
+        assertionFailureMessage: "Expected validation message to be visible.",
+        expectedValue: "Validation message",
+        actualValue: "No message",
+        failureLocation: { file: "tests/checkout.spec.ts", line: 24, column: 9 },
+        consoleErrors: ["Checkout request failed.", "Validation state was empty."],
+        pageErrors: ["Unhandled page error.", "Second page error."],
+        artifactPaths: ["test-results/trace.zip", "test-results/screenshot.png"]
+      },
+      execution: {
+        command: sensitiveCommand,
+        exitCode: 1,
+        timedOut: true,
+        stdout: sensitiveStdout,
+        stderr: sensitiveStderr,
+        durationMs: 1_000,
+        artifacts: ["raw-artifact-path"]
+      }
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const evidence = await screen.findByRole("region", { name: "Execution evidence" });
+    expect(within(evidence).getByText(/execution facts, not the final verification verdict/i)).toBeTruthy();
+    expect(within(evidence).getByText("checkout displays validation")).toBeTruthy();
+    expect(within(evidence).getByText("timed out")).toBeTruthy();
+    expect(within(evidence).getByText("Expected validation message to be visible.")).toBeTruthy();
+    expect(within(evidence).getByText("Validation message")).toBeTruthy();
+    expect(within(evidence).getByText("No message")).toBeTruthy();
+    expect(within(evidence).getByText("tests/checkout.spec.ts", { selector: "code" })).toBeTruthy();
+    expect(within(evidence).getByText(/:24:9/)).toBeTruthy();
+    const consoleErrors = within(evidence).getByRole("list", { name: "Console errors" });
+    expect(within(consoleErrors).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "Checkout request failed.",
+      "Validation state was empty."
+    ]);
+    const pageErrors = within(evidence).getByRole("list", { name: "Page errors" });
+    expect(within(pageErrors).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "Unhandled page error.",
+      "Second page error."
+    ]);
+    expect(within(evidence).getAllByText("test-results/trace.zip", { selector: "code" })).toHaveLength(1);
+    expect(within(evidence).getAllByText("test-results/screenshot.png", { selector: "code" })).toHaveLength(1);
+    expect(screen.queryByText(sensitiveCommand)).toBeNull();
+    expect(screen.queryByText(sensitiveStdout)).toBeNull();
+    expect(screen.queryByText(sensitiveStderr)).toBeNull();
+    expect(screen.queryByText("raw-artifact-path")).toBeNull();
+    expect(within(evidence).queryByRole("link")).toBeNull();
+    expect(within(evidence).queryByText("Verified reproduction")).toBeNull();
+  });
+
+  it("renders partial execution evidence without empty fields or lists", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
+      executionEvidence: {
+        failureLocation: { file: "tests/checkout.spec.ts" },
+        consoleErrors: [],
+        pageErrors: [],
+        artifactPaths: []
+      }
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const evidence = await screen.findByRole("region", { name: "Execution evidence" });
+    expect(within(evidence).getByText("tests/checkout.spec.ts", { selector: "code" })).toBeTruthy();
+    expect(within(evidence).queryByText("Test title")).toBeNull();
+    expect(within(evidence).queryByRole("list", { name: "Console errors" })).toBeNull();
+    expect(within(evidence).queryByRole("list", { name: "Page errors" })).toBeNull();
+    expect(within(evidence).queryByRole("list", { name: "Artifact paths" })).toBeNull();
+  });
+
+  it.each([
+    ["omits", {}],
+    ["contains only empty arrays in", {
+      executionEvidence: { consoleErrors: [], pageErrors: [], artifactPaths: [] }
+    }]
+  ])("shows the execution-evidence fallback when the investigation %s executionEvidence", async (_description, options) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, options)));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const evidence = await screen.findByRole("region", { name: "Execution evidence" });
+    expect(within(evidence).getByText("No structured execution evidence was recorded for this investigation.")).toBeTruthy();
+  });
+
+  it("renders preserved execution evidence for an execution error separately from analysis evidence", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("execution_error", undefined, undefined, {
+      analysisEvidence: [{ sourcePath: "src/checkout.tsx", observation: "The validation state is missing." }],
+      executionEvidence: {
+        testStatus: "failed",
+        consoleErrors: [],
+        pageErrors: [],
+        artifactPaths: []
+      }
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    expect(await screen.findByRole("region", { name: "Analysis evidence" })).toBeTruthy();
+    const evidence = await screen.findByRole("region", { name: "Execution evidence" });
+    expect(screen.getByText(/Execution failure:/)).toBeTruthy();
+    expect(within(evidence).getByText("failed")).toBeTruthy();
+  });
+
   it("polls the investigation ID and renders updated timeline events in API order", async () => {
     vi.useFakeTimers();
     const created = makeInvestigation("analyzing", ["created", "preflight", "analyzing"]);
@@ -373,7 +488,11 @@ function makeInvestigation(
   status: InvestigationStatus,
   statuses: InvestigationStatus[] = ["created", status],
   id = "0f3dbf27-7ee6-4d17-bcbc-b0f64e9c46b1",
-  options: { analysisEvidence?: Investigation["analysisEvidence"] } = {}
+  options: {
+    analysisEvidence?: Investigation["analysisEvidence"];
+    executionEvidence?: Investigation["executionEvidence"];
+    execution?: Investigation["execution"];
+  } = {}
 ): Investigation {
   return {
     id,
@@ -397,7 +516,9 @@ function makeInvestigation(
     recommendedNextStep: "Review the generated test.",
     createdAt: "2026-07-18T12:00:00.000Z",
     updatedAt: "2026-07-18T12:00:00.000Z",
-    ...("analysisEvidence" in options ? { analysisEvidence: options.analysisEvidence } : {})
+    ...("analysisEvidence" in options ? { analysisEvidence: options.analysisEvidence } : {}),
+    ...("executionEvidence" in options ? { executionEvidence: options.executionEvidence } : {}),
+    ...("execution" in options ? { execution: options.execution } : {})
   };
 }
 

@@ -35,8 +35,60 @@ export function InvestigationResults({ investigation }: { investigation?: Invest
         </>
       ) : null}
       {investigation.generatedTestPath ? <p><strong>Generated test path:</strong> {investigation.generatedTestPath}</p> : null}
+      <ExecutionEvidenceSection evidence={investigation.executionEvidence} />
       {investigation.verdictExplanation ? <p><strong>Verdict:</strong> {investigation.verdictExplanation}</p> : null}
       {investigation.recommendedNextStep ? <p><strong>Next step:</strong> {investigation.recommendedNextStep}</p> : null}
     </div>
   );
+}
+
+function ExecutionEvidenceSection({ evidence }: { evidence?: Investigation["executionEvidence"] }) {
+  const hasDetails = Boolean(evidence && (
+    evidence.testTitle !== undefined ||
+    evidence.testStatus !== undefined ||
+    evidence.assertionFailureMessage !== undefined ||
+    evidence.expectedValue !== undefined ||
+    evidence.actualValue !== undefined ||
+    evidence.failureLocation !== undefined ||
+    evidence.consoleErrors.length > 0 ||
+    evidence.pageErrors.length > 0 ||
+    evidence.artifactPaths.length > 0
+  ));
+
+  return (
+    <section className="execution-evidence" aria-labelledby="execution-evidence-heading">
+      <h3 id="execution-evidence-heading">Execution evidence</h3>
+      <p className="execution-evidence-intro">Structured, sanitized observations collected while running the generated test. These are execution facts, not the final verification verdict.</p>
+      {!hasDetails || !evidence ? <p>No structured execution evidence was recorded for this investigation.</p> : (
+        <>
+          <dl className="execution-evidence-details">
+            {evidence.testTitle !== undefined ? <><dt>Test title</dt><dd>{evidence.testTitle}</dd></> : null}
+            {evidence.testStatus !== undefined ? <><dt>Test status</dt><dd>{formatTestStatus(evidence.testStatus)}</dd></> : null}
+            {evidence.assertionFailureMessage !== undefined ? <><dt>Assertion failure</dt><dd>{evidence.assertionFailureMessage}</dd></> : null}
+            {evidence.expectedValue !== undefined ? <><dt>Expected value</dt><dd>{evidence.expectedValue}</dd></> : null}
+            {evidence.actualValue !== undefined ? <><dt>Actual value</dt><dd>{evidence.actualValue}</dd></> : null}
+            {evidence.failureLocation ? <><dt>Failure location</dt><dd><code>{evidence.failureLocation.file}</code>{evidence.failureLocation.line !== undefined ? `:${evidence.failureLocation.line}` : ""}{evidence.failureLocation.column !== undefined ? `:${evidence.failureLocation.column}` : ""}</dd></> : null}
+          </dl>
+          {evidence.consoleErrors.length ? <EvidenceList label="Console errors" items={evidence.consoleErrors} /> : null}
+          {evidence.pageErrors.length ? <EvidenceList label="Page errors" items={evidence.pageErrors} /> : null}
+          {evidence.artifactPaths.length ? <EvidenceList label="Artifact paths" items={evidence.artifactPaths} codeItems /> : null}
+        </>
+      )}
+    </section>
+  );
+}
+
+function EvidenceList({ label, items, codeItems = false }: { label: string; items: string[]; codeItems?: boolean }) {
+  return (
+    <div>
+      <h4>{label}</h4>
+      <ul className="execution-evidence-list" aria-label={label}>
+        {items.map((item, index) => <li key={`${item}-${index}`}>{codeItems ? <code>{item}</code> : item}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+function formatTestStatus(status: string): string {
+  return status.replace(/([A-Z])/g, " $1").toLowerCase();
 }
