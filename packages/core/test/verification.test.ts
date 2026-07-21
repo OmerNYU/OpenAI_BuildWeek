@@ -16,11 +16,20 @@ const hypothesis: VerificationInput["hypothesis"] = {
   assumptions: []
 };
 
+const request: VerificationInput["request"] = {
+  repositoryPath: "/tmp/checkout-app",
+  bugTitle: "Checkout validation is missing",
+  bugDescription: "The checkout does not show a validation message.",
+  expectedBehavior: "A validation message appears.",
+  actualBehavior: "No validation message appears."
+};
+
 function input(overrides: {
   execution?: Partial<ExecutionResult>;
   evidence?: Partial<ExecutionEvidence>;
 } = {}): VerificationInput {
   return {
+    request,
     hypothesis,
     execution: {
       command: "controlled_playwright_generated_test",
@@ -113,6 +122,60 @@ describe("verification classification", () => {
   it("classifies normally completed failed and skipped tests as partial", () => {
     expect(classify(input({ execution: { exitCode: 1 }, evidence: { testStatus: "failed" } })).verdict).toBe("partial");
     expect(classify(input({ execution: { exitCode: 0 }, evidence: { testStatus: "skipped" } })).verdict).toBe("partial");
+  });
+
+  it("verifies a controlled failed assertion whose expected and actual values match the report", () => {
+    const result = classifyVerification({
+      ...input({
+        execution: { exitCode: 1 },
+        evidence: {
+          testStatus: "failed",
+          assertionFailureMessage: "Expected charged total to match.",
+          expectedValue: "Charged total: $24.00",
+          actualValue: "Charged total: $12.00"
+        }
+      }),
+      hypothesis: {
+        ...hypothesis,
+        expectedFailureSignal: "Charged total remains $12.00."
+      },
+      request: {
+        repositoryPath: "/tmp/checkout-app",
+        bugTitle: "Checkout ignores quantity",
+        bugDescription: "Quantity is not applied to the total.",
+        expectedBehavior: "The charged total is $24.00 because two notebooks cost $12.00 each.",
+        actualBehavior: "The checkout confirms Charged total: $12.00."
+      }
+    });
+
+    expect(result.verdict).toBe("verified");
+  });
+
+  it("keeps a failed assertion partial when its actual value is not in the report", () => {
+    const result = classifyVerification({
+      ...input({
+        execution: { exitCode: 1 },
+        evidence: {
+          testStatus: "failed",
+          assertionFailureMessage: "Expected charged total to match.",
+          expectedValue: "Charged total: $24.00",
+          actualValue: "Charged total: $18.00"
+        }
+      }),
+      hypothesis: {
+        ...hypothesis,
+        expectedFailureSignal: "Charged total remains $12.00."
+      },
+      request: {
+        repositoryPath: "/tmp/checkout-app",
+        bugTitle: "Checkout ignores quantity",
+        bugDescription: "Quantity is not applied to the total.",
+        expectedBehavior: "The charged total is $24.00 because two notebooks cost $12.00 each.",
+        actualBehavior: "The checkout confirms Charged total: $12.00."
+      }
+    });
+
+    expect(result.verdict).toBe("partial");
   });
 
   it("explains a skipped test without claiming its body completed", () => {

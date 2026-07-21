@@ -1,12 +1,14 @@
 import type {
   ExecutionEvidence,
   ExecutionResult,
+  InvestigationRequest,
   ReproductionHypothesis,
   VerificationResult,
   VerificationSignal
 } from "@failspec/contracts";
 
 export interface VerificationInput {
+  request: InvestigationRequest;
   hypothesis: ReproductionHypothesis;
   execution: ExecutionResult;
   evidence: ExecutionEvidence;
@@ -14,11 +16,10 @@ export interface VerificationInput {
 
 const maximumSupportingSignals = 10;
 const maximumSignalTextLength = 2_000;
+const maximumComparisonTokens = 128;
 
 export function classifyVerification(input: VerificationInput): VerificationResult {
-  void input.hypothesis;
-
-  const verdict = classifyVerdict(input.execution, input.evidence);
+  const verdict = classifyVerdict(input);
   return {
     verdict,
     ...verdictDetails(verdict, input.evidence),
@@ -26,7 +27,8 @@ export function classifyVerification(input: VerificationInput): VerificationResu
   };
 }
 
-function classifyVerdict(execution: ExecutionResult, evidence: ExecutionEvidence): VerificationResult["verdict"] {
+function classifyVerdict(input: VerificationInput): VerificationResult["verdict"] {
+  const { execution, evidence } = input;
   const status = evidence.testStatus;
   if (
     execution.timedOut ||
@@ -47,7 +49,39 @@ function classifyVerdict(execution: ExecutionResult, evidence: ExecutionEvidence
     return "execution_error";
   }
 
+  if (status === "failed" && verifiesReportedFailure(input)) {
+    return "verified";
+  }
+
   return status === "passed" ? "not_reproduced" : "partial";
+}
+
+function verifiesReportedFailure(input: VerificationInput): boolean {
+  const { assertionFailureMessage, actualValue, expectedValue } = input.evidence;
+  if (!assertionFailureMessage || !actualValue || !expectedValue || normalized(actualValue) === normalized(expectedValue)) {
+    return false;
+  }
+
+  return includesValue(input.request.expectedBehavior, expectedValue) &&
+    includesValue(input.request.actualBehavior, actualValue) &&
+    includesValue(input.hypothesis.expectedFailureSignal, actualValue);
+}
+
+function includesValue(text: string, value: string): boolean {
+  const valueTokens = tokens(value);
+  if (valueTokens.length === 0) {
+    return false;
+  }
+  const textTokens = new Set(tokens(text));
+  return valueTokens.every((token) => textTokens.has(token));
+}
+
+function normalized(value: string): string {
+  return tokens(value).join(" ");
+}
+
+function tokens(value: string): string[] {
+  return (value.toLowerCase().match(/[a-z]+|\d+(?:\.\d+)?/g) ?? []).slice(0, maximumComparisonTokens);
 }
 
 function verdictDetails(
@@ -66,6 +100,12 @@ function verdictDetails(
         ? "The generated test was skipped, so the reported bug could not be verified."
         : "The generated test failed, but the available evidence cannot safely verify the reported bug.",
       recommendedNextStep: "Review the recorded execution evidence and refine the reproduction test."
+    };
+  }
+  if (verdict === "verified") {
+    return {
+      explanation: "The generated test reproduced the reported failure with matching structured expected and actual values.",
+      recommendedNextStep: "Review the generated regression test and the recorded execution evidence."
     };
   }
   return {

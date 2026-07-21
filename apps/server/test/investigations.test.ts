@@ -201,6 +201,7 @@ describe("investigation API", () => {
     expect(completed.body.verification).toEqual(classifiedVerification("not_reproduced"));
     expect(completed.body.verdictExplanation).toBe(classifiedVerification("not_reproduced").explanation);
     expect(classify).toHaveBeenCalledWith({
+      request: validRequest,
       hypothesis: expect.objectContaining({ summary: "Mock hypothesis for the reported failure." }),
       execution: localRunnerOutput().execution,
       evidence: localRunnerOutput().evidence

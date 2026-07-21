@@ -147,6 +147,7 @@ export class InvestigationService {
       let verification;
       try {
         verification = verificationResultSchema.safeParse(this.verificationClassifier({
+          request: investigation.request,
           hypothesis: analysis.hypothesis,
           execution: runnerOutput.data.execution,
           evidence: runnerOutput.data.evidence
