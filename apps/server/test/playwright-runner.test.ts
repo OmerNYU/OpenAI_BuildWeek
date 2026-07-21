@@ -43,7 +43,7 @@ describe("controlled Playwright runner", () => {
     expect(operations.run).toHaveBeenCalledWith(
       {
         command: "npm",
-        args: ["run", "test:generated", "--", "--reporter=json", "--output", ".failspec/runner/artifacts"]
+        args: ["run", "test:generated", "--", "--reporter=json", "--output", join(".failspec", "runner", "artifacts")]
       },
       expect.any(Object)
     );
@@ -168,8 +168,8 @@ describe("controlled Playwright runner", () => {
       testTitle: "generated checkout",
       testStatus: "failed",
       assertionFailureMessage: "Expected [path]",
-      failureLocation: { file: "src/checkout.tsx", line: 12, column: 3 },
-      artifactPaths: [".failspec/runner/artifacts/trace.zip"]
+      failureLocation: { file: join("src", "checkout.tsx"), line: 12, column: 3 },
+      artifactPaths: [join(".failspec", "runner", "artifacts", "trace.zip")]
     });
     expect(output.evidence.artifactPaths).not.toContain("../../secret.zip");
     expect(JSON.stringify(output)).not.toContain(worktree);
