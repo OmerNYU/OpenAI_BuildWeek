@@ -275,6 +275,70 @@ describe("App", () => {
     expect(within(artifacts).queryByRole("link")).toBeNull();
   });
 
+  it("suppresses a file URI from the failure location while preserving other evidence", async () => {
+    const fileUri = "file:///private/failspec/worktree/tests/checkout.spec.ts";
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
+      executionEvidence: {
+        testTitle: "checkout validation remains observable",
+        failureLocation: { file: fileUri },
+        consoleErrors: [],
+        pageErrors: [],
+        artifactPaths: []
+      }
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const evidence = await screen.findByRole("region", { name: "Execution evidence" });
+    expect(within(evidence).getByText("checkout validation remains observable")).toBeTruthy();
+    expect(within(evidence).queryByText("Failure location")).toBeNull();
+    expect(screen.queryByText(fileUri)).toBeNull();
+  });
+
+  it("renders only safe relative paths from a mixed URI artifact list", async () => {
+    const fileUri = "file:///private/failspec/worktree/trace.zip";
+    const windowsFileUri = "file://C:/Users/hassan/worktree/trace.zip";
+    const httpsUri = "https://example.com/trace.zip";
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
+      executionEvidence: {
+        consoleErrors: [],
+        pageErrors: [],
+        artifactPaths: ["test-results/trace.zip", fileUri, windowsFileUri, httpsUri]
+      }
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const evidence = await screen.findByRole("region", { name: "Execution evidence" });
+    const artifacts = within(evidence).getByRole("list", { name: "Artifact paths" });
+    expect(within(artifacts).getByText("test-results/trace.zip", { selector: "code" })).toBeTruthy();
+    expect(screen.queryByText(fileUri)).toBeNull();
+    expect(screen.queryByText(windowsFileUri)).toBeNull();
+    expect(screen.queryByText(httpsUri)).toBeNull();
+    expect(within(artifacts).queryByRole("link")).toBeNull();
+  });
+
+  it("uses the execution-evidence fallback when only file URI paths are supplied", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
+      executionEvidence: {
+        failureLocation: { file: "file:///private/failspec/worktree/tests/checkout.spec.ts" },
+        consoleErrors: [],
+        pageErrors: [],
+        artifactPaths: ["file:///private/failspec/worktree/trace.zip"]
+      }
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const evidence = await screen.findByRole("region", { name: "Execution evidence" });
+    expect(within(evidence).getByText("No structured execution evidence was recorded for this investigation.")).toBeTruthy();
+    expect(evidence.querySelector("dl")).toBeNull();
+    expect(within(evidence).queryByRole("list", { name: "Artifact paths" })).toBeNull();
+  });
+
   it("uses the execution-evidence fallback when only unsafe paths are supplied", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
       executionEvidence: {

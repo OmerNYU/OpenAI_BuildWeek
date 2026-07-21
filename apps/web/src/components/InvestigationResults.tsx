@@ -101,7 +101,8 @@ function formatTestStatus(status: string): string {
 }
 
 function isSafeRelativeEvidencePath(value: string): boolean {
+  const hasSchemePrefix = /^[A-Za-z][A-Za-z0-9+.-]*:/.test(value);
   const hasAbsolutePrefix = value.startsWith("/") || value.startsWith("\\") || /^[A-Za-z]:/.test(value);
   const hasTraversalSegment = value.split(/[\\/]+/).some((segment) => segment === "..");
-  return !hasAbsolutePrefix && !hasTraversalSegment;
+  return !hasSchemePrefix && !hasAbsolutePrefix && !hasTraversalSegment;
 }
