@@ -81,6 +81,72 @@ describe("App", () => {
     expect(screen.getByText(/Terminal status:/)).toBeTruthy();
   });
 
+  it("renders file-backed analysis evidence under the terminal hypothesis", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
+      analysisEvidence: [{
+        sourcePath: "src/checkout.tsx",
+        observation: "The submit handler does not render a validation message."
+      }]
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const evidence = await screen.findByRole("list", { name: "Analysis evidence" });
+    expect(screen.getByRole("heading", { name: "Analysis evidence" })).toBeTruthy();
+    expect(within(evidence).getByText("src/checkout.tsx")).toBeTruthy();
+    expect(within(evidence).getByRole("listitem").textContent).toContain("The submit handler does not render a validation message.");
+    expect(screen.getByText(/not execution results or proof that the bug was reproduced/i)).toBeTruthy();
+  });
+
+  it("renders multiple observations even when they share a source path", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
+      analysisEvidence: [
+        { sourcePath: "src/checkout.tsx", observation: "The form state starts without an error." },
+        { sourcePath: "src/checkout.tsx", observation: "Submitting leaves the error state unchanged." }
+      ]
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const evidence = await screen.findByRole("list", { name: "Analysis evidence" });
+    expect(within(evidence).getAllByText("src/checkout.tsx")).toHaveLength(2);
+    expect(within(evidence).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      expect.stringContaining("The form state starts without an error."),
+      expect.stringContaining("Submitting leaves the error state unchanged.")
+    ]);
+  });
+
+  it.each([
+    ["omits", {}],
+    ["has no entries in", { analysisEvidence: [] }]
+  ])("shows the analysis-evidence fallback when the investigation %s analysisEvidence", async (_description, options) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, options)));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    await screen.findByRole("heading", { name: "Analysis evidence" });
+    expect(screen.getByText("No file-backed analysis evidence was recorded for this investigation.")).toBeTruthy();
+  });
+
+  it("renders preserved analysis evidence for an execution error", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("execution_error", undefined, undefined, {
+      analysisEvidence: [{
+        sourcePath: "src/checkout.tsx",
+        observation: "The missing validation state is preserved after submission."
+      }]
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const evidence = await screen.findByRole("list", { name: "Analysis evidence" });
+    expect(screen.getByText(/Execution failure:/)).toBeTruthy();
+    expect(within(evidence).getByRole("listitem").textContent).toContain("The missing validation state is preserved after submission.");
+  });
+
   it("polls the investigation ID and renders updated timeline events in API order", async () => {
     vi.useFakeTimers();
     const created = makeInvestigation("analyzing", ["created", "preflight", "analyzing"]);
@@ -306,7 +372,8 @@ const fieldLabels = [
 function makeInvestigation(
   status: InvestigationStatus,
   statuses: InvestigationStatus[] = ["created", status],
-  id = "0f3dbf27-7ee6-4d17-bcbc-b0f64e9c46b1"
+  id = "0f3dbf27-7ee6-4d17-bcbc-b0f64e9c46b1",
+  options: { analysisEvidence?: Investigation["analysisEvidence"] } = {}
 ): Investigation {
   return {
     id,
@@ -329,7 +396,8 @@ function makeInvestigation(
     verdictExplanation: "The deterministic mock runner returned the expected reproduction signal.",
     recommendedNextStep: "Review the generated test.",
     createdAt: "2026-07-18T12:00:00.000Z",
-    updatedAt: "2026-07-18T12:00:00.000Z"
+    updatedAt: "2026-07-18T12:00:00.000Z",
+    ...("analysisEvidence" in options ? { analysisEvidence: options.analysisEvidence } : {})
   };
 }
 

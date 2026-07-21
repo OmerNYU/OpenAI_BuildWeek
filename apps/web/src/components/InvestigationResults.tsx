@@ -21,6 +21,17 @@ export function InvestigationResults({ investigation }: { investigation?: Invest
               ))}
             </ul>
           ) : null}
+          <section className="analysis-evidence" aria-labelledby="analysis-evidence-heading">
+            <h3 id="analysis-evidence-heading">Analysis evidence</h3>
+            <p className="analysis-evidence-intro">File-backed repository observations that support this hypothesis. These observations are not execution results or proof that the bug was reproduced.</p>
+            {investigation.analysisEvidence?.length ? (
+              <ul className="analysis-evidence-list" aria-label="Analysis evidence">
+                {investigation.analysisEvidence.map((evidence, index) => (
+                  <li key={`${evidence.sourcePath}-${index}`}><code>{evidence.sourcePath}</code>: {evidence.observation}</li>
+                ))}
+              </ul>
+            ) : <p>No file-backed analysis evidence was recorded for this investigation.</p>}
+          </section>
         </>
       ) : null}
       {investigation.generatedTestPath ? <p><strong>Generated test path:</strong> {investigation.generatedTestPath}</p> : null}
