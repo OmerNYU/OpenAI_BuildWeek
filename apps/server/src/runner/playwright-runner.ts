@@ -392,12 +392,15 @@ async function parseEvidence(report: string, worktreePath: string, artifactsPath
     const location = asRecord(error.location);
     const matcher = asRecord(error.matcherResult);
     const assertion = assertionValues(error.message);
+    const expectedValue = text(typeof matcher.expected === "string" ? matcher.expected : assertion.expected, worktreePath);
+    const actualValue = text(typeof matcher.actual === "string" ? matcher.actual : assertion.actual, worktreePath);
+    const rawAssertionFailure = text(error.message, worktreePath);
     return {
       testTitle: text(result.title, worktreePath),
       testStatus: aggregateStatus(selected.map((entry) => entry.result.status)),
-      assertionFailureMessage: text(error.message, worktreePath),
-      expectedValue: text(typeof matcher.expected === "string" ? matcher.expected : assertion.expected, worktreePath),
-      actualValue: text(typeof matcher.actual === "string" ? matcher.actual : assertion.actual, worktreePath),
+      assertionFailureMessage: rawAssertionFailure === undefined ? undefined : clientAssertionFailure(expectedValue, actualValue),
+      expectedValue,
+      actualValue,
       failureLocation: location.file && containedPath(worktreePath, String(location.file))
         ? {
             file: containedPath(worktreePath, String(location.file))!,
@@ -420,6 +423,12 @@ function assertionValues(value: unknown): { expected?: string; actual?: string }
   }
   const line = (label: "Expected" | "Received") => value.match(new RegExp(`(?:^|\\n)${label}:\\s*(.+)(?:\\r?\\n|$)`))?.[1]?.trim() || undefined;
   return { expected: line("Expected"), actual: line("Received") };
+}
+
+function clientAssertionFailure(expected: string | undefined, actual: string | undefined): string {
+  return expected !== undefined && actual !== undefined
+    ? `Expected ${expected}; received ${actual}.`
+    : "The generated assertion did not match the rendered result.";
 }
 
 interface ReporterResult {

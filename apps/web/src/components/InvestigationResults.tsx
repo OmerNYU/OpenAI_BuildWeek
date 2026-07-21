@@ -76,7 +76,7 @@ function VerificationResultSection({ verification }: { verification: NonNullable
           <p className="verification-signals-intro">Bounded, structured signals that explain the classified result.</p>
           <ul className="verification-signals-list" aria-label="Supporting signals">
             {verification.supportingSignals.map((signal, index) => (
-              <li key={`${signal.type}-${index}`}><strong>{formatVerificationSignalType(signal.type)}:</strong> {isPathSignal(signal.type) ? <code>{signal.message}</code> : signal.message}</li>
+              <li key={`${signal.type}-${index}`}><strong>{formatVerificationSignalType(signal.type)}:</strong> {isPathSignal(signal.type) ? <code>{signal.message}</code> : signal.type === "assertion_failure" ? clientAssertionFailure(signal.message) : signal.message}</li>
             ))}
           </ul>
         </div>
@@ -116,9 +116,7 @@ function ExecutionEvidenceSection({ evidence }: { evidence?: Investigation["exec
             {evidence.testTitle !== undefined ? <><dt>Test title</dt><dd>{evidence.testTitle}</dd></> : null}
             {evidence.testStatus !== undefined ? <><dt>Test status</dt><dd>{formatTestStatus(evidence.testStatus)}</dd></> : null}
             {hasAssertionSummary ? <><dt>Expected</dt><dd>{evidence.expectedValue}</dd><dt>Received</dt><dd>{evidence.actualValue}</dd></> : null}
-            {evidence.assertionFailureMessage !== undefined ? (
-              hasAssertionSummary ? <><dt>Assertion details</dt><dd><details><summary>Show technical assertion details</summary><p>{evidence.assertionFailureMessage}</p></details></dd></> : <><dt>Assertion failure</dt><dd>{evidence.assertionFailureMessage}</dd></>
-            ) : null}
+            {evidence.assertionFailureMessage !== undefined && !hasAssertionSummary ? <><dt>Assertion failure</dt><dd>{clientAssertionFailure(evidence.assertionFailureMessage)}</dd></> : null}
             {!hasAssertionSummary && evidence.expectedValue !== undefined ? <><dt>Expected value</dt><dd>{evidence.expectedValue}</dd></> : null}
             {!hasAssertionSummary && evidence.actualValue !== undefined ? <><dt>Actual value</dt><dd>{evidence.actualValue}</dd></> : null}
             {safeFailureLocation ? <><dt>Failure location</dt><dd><code>{safeFailureLocation.file}</code>{safeFailureLocation.line !== undefined ? `:${safeFailureLocation.line}` : ""}{safeFailureLocation.column !== undefined ? `:${safeFailureLocation.column}` : ""}</dd></> : null}
@@ -164,6 +162,12 @@ function formatVerificationSignalType(type: string): string {
 
 function isPathSignal(type: string): boolean {
   return type === "failure_location" || type === "artifact_path";
+}
+
+function clientAssertionFailure(message: string): string {
+  return /^Expected .+; received .+\.$/.test(message)
+    ? message
+    : "The generated assertion did not match the rendered result.";
 }
 
 function isSafeRelativeEvidencePath(value: string): boolean {

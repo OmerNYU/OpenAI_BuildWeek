@@ -167,7 +167,7 @@ describe("controlled Playwright runner", () => {
     expect(output.evidence).toMatchObject({
       testTitle: "generated checkout",
       testStatus: "failed",
-      assertionFailureMessage: "Expected [path]",
+      assertionFailureMessage: "The generated assertion did not match the rendered result.",
       failureLocation: { file: join("src", "checkout.tsx"), line: 12, column: 3 },
       artifactPaths: [join(".failspec", "runner", "artifacts", "trace.zip")]
     });
@@ -185,7 +185,11 @@ describe("controlled Playwright runner", () => {
     });
 
     await expect(new PlaywrightRunnerAdapter(fakeOperations(reporter)).run(input(worktree))).resolves.toMatchObject({
-      evidence: { expectedValue: "Charged total: $24.00", actualValue: "Charged total: $12.00" }
+      evidence: {
+        assertionFailureMessage: "Expected Charged total: $24.00; received Charged total: $12.00.",
+        expectedValue: "Charged total: $24.00",
+        actualValue: "Charged total: $12.00"
+      }
     });
   });
 
@@ -213,7 +217,7 @@ describe("controlled Playwright runner", () => {
       { project: "chromium", results: [{ status: "failed", retry: 0, errors: [{ message: "chromium failure" }] }] }
     ]);
     await expect(new PlaywrightRunnerAdapter(fakeOperations(failureReport)).run(input(await createWorktree()))).resolves.toMatchObject({
-      evidence: { testStatus: "failed", assertionFailureMessage: "chromium failure" }
+      evidence: { testStatus: "failed", assertionFailureMessage: "The generated assertion did not match the rendered result." }
     });
   });
 
@@ -534,7 +538,7 @@ describe("controlled Playwright runner", () => {
     await expect(readFile(logPath, "utf8")).resolves.toBe("server diagnostic");
   });
 
-  it("removes absolute paths and external URLs without obscuring loopback URLs", async () => {
+  it("removes internal paths and URLs from the client-facing assertion summary", async () => {
     const worktree = await createWorktree();
     const output = await new PlaywrightRunnerAdapter(fakeOperations(projectsReport([{
       project: "chromium",
@@ -548,7 +552,7 @@ describe("controlled Playwright runner", () => {
     expect(output.evidence.assertionFailureMessage).not.toContain("Omer Hayat");
     expect(output.evidence.assertionFailureMessage).not.toContain("example.com");
     expect(output.evidence.assertionFailureMessage).not.toContain("secret");
-    expect(output.evidence.assertionFailureMessage).toContain("http://127.0.0.1:43123/checkout");
+    expect(output.evidence.assertionFailureMessage).toBe("The generated assertion did not match the rendered result.");
   });
 
   it("does not delete or overwrite repository-provided runner artifacts", async () => {
