@@ -19,15 +19,13 @@ describe("CodexJsonlClient", () => {
     );
   });
 
-  it("includes standard error when the CLI exits unsuccessfully", async () => {
+  it("returns a safe failure category when the CLI exits unsuccessfully", async () => {
     const client = new CodexJsonlClient({
       async execute() {
         return { exitCode: 1, stdout: "", stderr: "Authentication failed" };
       }
     });
 
-    await expect(client.run({ cwd: "/tmp/example", prompt: "Return JSON." })).rejects.toThrow(
-      "Authentication failed"
-    );
+    await expect(client.run({ cwd: "/tmp/example", prompt: "Return JSON." })).rejects.toThrow("cli_failed");
   });
 });

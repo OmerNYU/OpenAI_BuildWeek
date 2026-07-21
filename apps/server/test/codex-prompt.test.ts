@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildAnalysisPrompt, buildTestGenerationPrompt } from "../src/codex/prompt.js";
+import { generatedTestPolicyExample, validateGeneratedTestSource } from "../src/generated-test/index.js";
 
 const request = {
   repositoryPath: "/tmp/checkout-app",
@@ -53,5 +54,8 @@ describe("Codex prompts", () => {
     expect(prompt).toContain("Reuse selectors, routes, and behavioral expectations from the repository only when they are compatible with this policy.");
     expect(prompt).toContain("This policy overrides incompatible repository helpers, custom fixtures, variables, aliases, page objects, and conventions.");
     expect(prompt).toContain("Include at least one approved interaction and at least one assertion.");
+    expect(prompt).toContain(generatedTestPolicyExample);
+    expect(prompt).toContain("Do not add variables, helpers, aliases, extra imports");
+    expect(validateGeneratedTestSource(generatedTestPolicyExample).valid).toBe(true);
   });
 });

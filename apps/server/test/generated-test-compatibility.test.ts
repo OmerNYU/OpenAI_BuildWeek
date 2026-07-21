@@ -19,6 +19,16 @@ const cases = [
     valid: true
   },
   {
+    name: "a role locator with literal name and exact options",
+    content: program("await page.getByRole('button', { name: 'Complete checkout', exact: true }).click(); await expect(page.getByRole('status')).toHaveText('Done');"),
+    valid: true
+  },
+  {
+    name: "a role locator with unsupported options",
+    content: program("await page.getByRole('button', { includeHidden: true }).click(); await expect(page.getByText('Done')).toBeVisible();"),
+    valid: false
+  },
+  {
     name: "an aliased Playwright import",
     content: "import { expect, test as pwTest } from '@playwright/test'; pwTest('x', async ({ page }) => { await page.click('button'); await expect(true).toBe(true); });",
     valid: false

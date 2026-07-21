@@ -1,6 +1,7 @@
 export {
   generatedTestCapabilities,
   generatedTestPolicyDescription,
+  generatedTestPolicyExample,
   stagedGeneratedTestPath,
   validateGeneratedTestSource,
   type GeneratedTestCapability,

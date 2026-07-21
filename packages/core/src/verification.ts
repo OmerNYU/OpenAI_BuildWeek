@@ -5,9 +5,11 @@ import type {
   VerificationResult,
   VerificationSignal
 } from "@failspec/contracts";
+import type { GeneratedTest } from "./adapters.js";
 
 export interface VerificationInput {
   hypothesis: ReproductionHypothesis;
+  generatedTest: GeneratedTest;
   execution: ExecutionResult;
   evidence: ExecutionEvidence;
 }
@@ -16,9 +18,7 @@ const maximumSupportingSignals = 10;
 const maximumSignalTextLength = 2_000;
 
 export function classifyVerification(input: VerificationInput): VerificationResult {
-  void input.hypothesis;
-
-  const verdict = classifyVerdict(input.execution, input.evidence);
+  const verdict = classifyVerdict(input);
   return {
     verdict,
     ...verdictDetails(verdict, input.evidence),
@@ -26,7 +26,8 @@ export function classifyVerification(input: VerificationInput): VerificationResu
   };
 }
 
-function classifyVerdict(execution: ExecutionResult, evidence: ExecutionEvidence): VerificationResult["verdict"] {
+function classifyVerdict(input: VerificationInput): VerificationResult["verdict"] {
+  const { execution, evidence } = input;
   const status = evidence.testStatus;
   if (
     execution.timedOut ||
@@ -47,7 +48,26 @@ function classifyVerdict(execution: ExecutionResult, evidence: ExecutionEvidence
     return "execution_error";
   }
 
-  return status === "passed" ? "not_reproduced" : "partial";
+  if (status === "passed") {
+    return "not_reproduced";
+  }
+  return isVerifiedAssertion(input) ? "verified" : "partial";
+}
+
+function isVerifiedAssertion(input: VerificationInput): boolean {
+  const { execution, evidence, hypothesis, generatedTest } = input;
+  const expected = evidence.expectedValue;
+  const actual = evidence.actualValue;
+  return execution.exitCode === 1 &&
+    evidence.testStatus === "failed" &&
+    Boolean(evidence.testTitle) &&
+    Boolean(evidence.assertionFailureMessage) &&
+    expected !== undefined &&
+    actual !== undefined &&
+    expected !== actual &&
+    Boolean(generatedTest.path) &&
+    generatedTest.content.includes(expected) &&
+    hypothesis.expectedFailureSignal.includes(expected);
 }
 
 function verdictDetails(
@@ -66,6 +86,12 @@ function verdictDetails(
         ? "The generated test was skipped, so the reported bug could not be verified."
         : "The generated test failed, but the available evidence cannot safely verify the reported bug.",
       recommendedNextStep: "Review the recorded execution evidence and refine the reproduction test."
+    };
+  }
+  if (verdict === "verified") {
+    return {
+      explanation: "The generated regression test produced a structured assertion mismatch matching the reported behavior.",
+      recommendedNextStep: "Review the generated regression test and implement a fix for the verified behavior."
     };
   }
   return {

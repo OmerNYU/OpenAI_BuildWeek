@@ -17,11 +17,18 @@ const hypothesis: VerificationInput["hypothesis"] = {
 };
 
 function input(overrides: {
+  hypothesis?: Partial<VerificationInput["hypothesis"]>;
+  generatedTest?: Partial<VerificationInput["generatedTest"]>;
   execution?: Partial<ExecutionResult>;
   evidence?: Partial<ExecutionEvidence>;
 } = {}): VerificationInput {
   return {
-    hypothesis,
+    hypothesis: { ...hypothesis, ...overrides.hypothesis },
+    generatedTest: {
+      path: "tests/generated/failspec.generated.spec.ts",
+      content: "import { expect, test } from '@playwright/test';",
+      ...overrides.generatedTest
+    },
     execution: {
       command: "controlled_playwright_generated_test",
       exitCode: 0,
@@ -222,13 +229,54 @@ describe("verification classification", () => {
     expect(result.supportingSignals.find((signal) => signal.type === "assertion_failure")?.message).toHaveLength(2_000);
   });
 
-  it("is deterministic and never emits verified under the current contract", () => {
+  it("verifies a failed generated test with a structured assertion mismatch", () => {
     const value = input({
       execution: { exitCode: 1 },
-      evidence: { testStatus: "failed", assertionFailureMessage: hypothesis.expectedFailureSignal }
+      hypothesis: { expectedFailureSignal: "Expected Charged total: $24.00 but received a different total." },
+      generatedTest: { content: "await expect(page.getByRole('status')).toHaveText('Charged total: $24.00');" },
+      evidence: {
+        testStatus: "failed",
+        testTitle: "checkout charges the selected quantity",
+        assertionFailureMessage: hypothesis.expectedFailureSignal,
+        expectedValue: "Charged total: $24.00",
+        actualValue: "Charged total: $12.00"
+      }
     });
 
     expect(classify(value)).toEqual(classify(value));
-    expect(classify(value).verdict).not.toBe("verified");
+    expect(classify(value)).toMatchObject({ verdict: "verified" });
+  });
+
+  it.each([
+    [
+      "the hypothesis does not name the expected value",
+      { hypothesis: { expectedFailureSignal: "The checkout total is wrong." } }
+    ],
+    [
+      "the staged generated test does not contain the expected assertion",
+      { generatedTest: { content: "await page.getByRole('button', { name: 'Complete checkout' }).click();" } }
+    ]
+  ])("keeps a structured mismatch partial when %s", (_name, handoff) => {
+    expect(classify(input({
+      execution: { exitCode: 1 },
+      hypothesis: { expectedFailureSignal: "Expected Charged total: $24.00 but received a different total.", ...handoff.hypothesis },
+      generatedTest: { content: "await expect(page.getByRole('status')).toHaveText('Charged total: $24.00');", ...handoff.generatedTest },
+      evidence: {
+        testStatus: "failed",
+        testTitle: "checkout charges the selected quantity",
+        assertionFailureMessage: "assertion",
+        expectedValue: "Charged total: $24.00",
+        actualValue: "Charged total: $12.00"
+      }
+    }))).toMatchObject({ verdict: "partial" });
+  });
+
+  it.each([
+    ["no test title", { evidence: { testStatus: "failed", assertionFailureMessage: "assertion", expectedValue: "expected", actualValue: "actual" } }],
+    ["no assertion message", { evidence: { testStatus: "failed", testTitle: "generated", expectedValue: "expected", actualValue: "actual" } }],
+    ["no expected value", { evidence: { testStatus: "failed", testTitle: "generated", assertionFailureMessage: "assertion", actualValue: "actual" } }],
+    ["equal structured values", { evidence: { testStatus: "failed", testTitle: "generated", assertionFailureMessage: "assertion", expectedValue: "same", actualValue: "same" } }]
+  ])("keeps a failed test partial with %s", (_name, overrides) => {
+    expect(classify(input({ execution: { exitCode: 1 }, ...overrides }))).toMatchObject({ verdict: "partial" });
   });
 });
