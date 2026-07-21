@@ -47,6 +47,31 @@ describe("JsonInvestigationStore", () => {
 
     await expect(store.getById("../outside")).resolves.toBeUndefined();
   });
+
+  it("persists structured verification and preserves its supporting-signal order", async () => {
+    const store = new JsonInvestigationStore(storageDirectory);
+    const investigation = {
+      ...validInvestigation(),
+      status: "partial" as const,
+      verification: {
+        verdict: "partial" as const,
+        explanation: "Evidence is incomplete.",
+        recommendedNextStep: "Refine the scenario.",
+        supportingSignals: [{ type: "first", message: "First." }, { type: "second", message: "Second." }]
+      }
+    };
+
+    await store.save(investigation);
+
+    expect((await store.getById(investigation.id))?.verification).toEqual(investigation.verification);
+  });
+
+  it("rejects malformed verification before persistence", async () => {
+    const store = new JsonInvestigationStore(storageDirectory);
+    const investigation = { ...validInvestigation(), verification: { verdict: "invalid" } } as unknown as Investigation;
+
+    await expect(store.save(investigation)).rejects.toBeDefined();
+  });
 });
 
 function validInvestigation(): Investigation {

@@ -5,13 +5,16 @@ import {
   type InvestigationStatus,
   generatedTestStagingResultSchema,
   runnerOutputSchema,
-  type GeneratedTestStagingResult
+  verificationResultSchema,
+  type GeneratedTestStagingResult,
+  type VerificationResult
 } from "@failspec/contracts";
 import {
   assertTransition,
   canTransition,
   type CodexAdapter,
   type GeneratedTest,
+  type VerificationInput,
   type RunnerAdapter
 } from "@failspec/core";
 import type { InvestigationStore } from "../storage/investigation-store.js";
@@ -25,6 +28,8 @@ export type GeneratedTestStager = (
   content: string
 ) => Promise<GeneratedTestStagingResult>;
 
+export type VerificationClassifier = (input: VerificationInput) => VerificationResult;
+
 export class InvestigationService {
   constructor(
     private readonly store: InvestigationStore,
@@ -33,7 +38,7 @@ export class InvestigationService {
     private readonly scheduler: WorkflowScheduler,
     private readonly repositoryWorkspace: RepositoryWorkspace,
     private readonly generatedTestStager: GeneratedTestStager,
-    private readonly mode: InvestigationRuntimeMode
+    private readonly verificationClassifier: VerificationClassifier
   ) {}
 
   async create(request: InvestigationRequest): Promise<Investigation> {
@@ -139,12 +144,23 @@ export class InvestigationService {
       if (!(await cleanup())) {
         throw new WorkflowFailure("The repository workspace could not be cleaned up safely.");
       }
-      if (this.mode === "local") {
-        throw new WorkflowFailure("Execution evidence was collected, but verification is unavailable.");
+      let verification;
+      try {
+        verification = verificationResultSchema.safeParse(this.verificationClassifier({
+          hypothesis: analysis.hypothesis,
+          execution: runnerOutput.data.execution,
+          evidence: runnerOutput.data.evidence
+        }));
+      } catch {
+        throw new WorkflowFailure("The execution evidence could not be classified safely.");
       }
-      investigation.verdictExplanation = "The deterministic mock runner returned the expected reproduction signal.";
-      investigation.recommendedNextStep = "Review the generated regression test before running it against a real repository.";
-      await transition("verified", "Mock reproduction verified.");
+      if (!verification.success) {
+        throw new WorkflowFailure("The execution evidence could not be classified safely.");
+      }
+      investigation.verification = verification.data;
+      investigation.verdictExplanation = verification.data.explanation;
+      investigation.recommendedNextStep = verification.data.recommendedNextStep;
+      await transition(verification.data.verdict, terminalMessage(verification.data.verdict));
       return investigation;
     } catch (error: unknown) {
       if (preparedWorkspace && !cleanupAttempted) {
@@ -190,3 +206,10 @@ export class InvestigationService {
 }
 
 class WorkflowFailure extends Error {}
+
+function terminalMessage(verdict: VerificationResult["verdict"]): string {
+  if (verdict === "verified") return "Reproduction verified.";
+  if (verdict === "partial") return "Investigation completed with partial evidence.";
+  if (verdict === "not_reproduced") return "The generated test did not reproduce the reported failure.";
+  return "Execution evidence could not be classified as a valid reproduction.";
+}
