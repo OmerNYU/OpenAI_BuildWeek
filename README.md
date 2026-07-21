@@ -47,13 +47,11 @@ $env:FAILSPEC_CODEX_MODE = "local"
 npm run dev:server
 ```
 
-Mock mode uses pass-through repository preparation: it performs no Git commands or preflight checks and uses the submitted repository path directly. Local mode runs repository preflight and consumes the existing deterministic isolated-worktree boundary. Codex analysis, test generation, and the mocked runner boundary receive the prepared workspace path; cleanup uses that same existing boundary. The submitted repository path remains persisted with the investigation.
-
-Generated-test staging and controlled Playwright execution are implemented as Person 3 boundaries, but orchestration still injects the deterministic mock runner until the separate integration work lands. Verdict classification remains mocked.
+Mock mode uses pass-through repository preparation: it performs no Git commands or preflight checks and uses the submitted repository path directly. Local mode runs repository preflight, prepares an isolated workspace, stages the generated test through the approved staging boundary, and runs it through `PlaywrightRunnerAdapter`. It persists sanitized execution facts and structured execution evidence, then ends fail-closed as `execution_error` because evidence-based verification classification is not yet available; cleanup uses the same existing workspace boundary. Mock mode remains deterministic and uses mock/pass-through components without real staging or execution. The submitted repository path remains persisted with the investigation.
 
 ## Investigation API
 
-The backend schedules deterministic mock orchestration in-process for the first vertical slice:
+The backend schedules investigation workflows in-process. Mock mode remains deterministic, while local mode uses the real Codex, staging, and controlled-runner boundaries:
 
 - `POST /api/investigations`
 - `GET /api/investigations/:id`
@@ -84,4 +82,4 @@ npm run build
 
 ## Current scaffold limitations
 
-The frontend supports bug-report submission, investigation progress, polling through the existing API, and terminal summaries. The real Codex adapter is integrated behind `FAILSPEC_CODEX_MODE=local` and performs repository preflight plus analysis and test generation in an isolated worktree. Cleanup is in-process only and uses the existing worktree boundary; cleanup failure prevents successful verification. Generated-test staging, controlled Playwright execution, and execution-evidence collection are implemented boundaries, but orchestration still uses its deterministic mock runner and verdict classifier until the separate integration work lands.
+The frontend supports bug-report submission, investigation progress, polling through the existing API, and terminal summaries. The real Codex adapter is integrated behind `FAILSPEC_CODEX_MODE=local` and performs repository preflight plus analysis and test generation in an isolated worktree. Local orchestration stages the generated test, runs it through the controlled Playwright runner, and persists sanitized execution facts and execution evidence separately. Cleanup is in-process only and uses the existing worktree boundary; cleanup failure prevents a successful result. Verification classification is not yet integrated, so local execution terminates fail-closed as `execution_error` after evidence collection rather than inferring a verdict from Playwright status or an exit code. Mock mode remains deterministic and performs no real repository, staging, runner, or process work.

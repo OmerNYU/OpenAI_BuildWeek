@@ -222,6 +222,7 @@ export const investigationResultSchema = z.object({
   generatedTestPath: z.string().optional(),
   generatedTestContent: z.string().optional(),
   execution: executionResultSchema.optional(),
+  executionEvidence: executionEvidenceSchema.optional(),
   verdictExplanation: z.string().optional(),
   recommendedNextStep: z.string().optional()
 });

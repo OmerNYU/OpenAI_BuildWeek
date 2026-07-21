@@ -8,7 +8,8 @@ import type {
   InvestigationRequest,
   CodexAnalysisResult,
   ReproductionHypothesis,
-  RunnerOutput
+  RunnerOutput,
+  GeneratedTestStagingResult
 } from "@failspec/contracts";
 import { codexAnalysisResultSchema } from "@failspec/contracts";
 import {
@@ -30,6 +31,10 @@ import {
 } from "../src/repository/repository-workspace.js";
 import { JsonInvestigationStore } from "../src/storage/json-investigation-store.js";
 import type { InvestigationStore } from "../src/storage/investigation-store.js";
+import type {
+  GeneratedTestStager,
+  InvestigationRuntimeMode
+} from "../src/services/investigation-service.js";
 
 const validRequest: InvestigationRequest = {
   repositoryPath: "C:/repos/example",
@@ -131,6 +136,61 @@ describe("investigation API", () => {
     expect(run).toHaveBeenCalledWith(expect.objectContaining({ repositoryPath: workspacePath }));
     expect(completed.body.request.repositoryPath).toBe(validRequest.repositoryPath);
     expect(completed.body.status).toBe("verified");
+    expect(repositoryWorkspace.cleanup).toHaveBeenCalledWith(created.body.id);
+    expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("stages a local generated test before execution and persists evidence without verifying", async () => {
+    const scheduler = new ManualWorkflowScheduler();
+    const workspacePath = "C:/failspec/worktrees/checkout";
+    const repositoryWorkspace = createWorkspace({ workspacePath });
+    const stagedContents: string[] = [];
+    const stage = vi.fn(async (
+      path: string,
+      content: string
+    ): Promise<GeneratedTestStagingResult> => {
+      expect(path).toBe(workspacePath);
+      stagedContents.push(content);
+      return { status: "staged", stagedTestPath: stagedGeneratedTestPath };
+    });
+    const runnerAdapter: RunnerAdapter & { run: ReturnType<typeof vi.fn> } = {
+      run: vi.fn(async () => localRunnerOutput())
+    };
+    const app = createTestApp({
+      scheduler,
+      repositoryWorkspace,
+      generatedTestStager: stage,
+      runnerAdapter,
+      mode: "local"
+    });
+
+    const created = await request(app).post("/api/investigations").send(validRequest);
+    await scheduler.runNext();
+    const completed = await request(app).get(`/api/investigations/${created.body.id}`);
+
+    expect(stage).toHaveBeenCalledWith(workspacePath, expect.any(String));
+    expect(stagedContents[0]).toContain("test('mock'");
+    expect(runnerAdapter.run).toHaveBeenCalledWith({
+      repositoryPath: workspacePath,
+      generatedTest: { content: stagedContents[0], path: stagedGeneratedTestPath }
+    });
+    expect(stage.mock.invocationCallOrder[0]).toBeLessThan(runnerAdapter.run.mock.invocationCallOrder[0]);
+    expect(completed.body.status).toBe("execution_error");
+    expect(completed.body.timeline.map((event: { status: string }) => event.status)).toEqual([
+      "created",
+      "preflight",
+      "analyzing",
+      "hypothesis_ready",
+      "generating_test",
+      "test_ready",
+      "executing",
+      "execution_error"
+    ]);
+    expect(completed.body.request.repositoryPath).toBe(validRequest.repositoryPath);
+    expect(completed.body.generatedTestPath).toBe(stagedGeneratedTestPath);
+    expect(completed.body.execution).toEqual(localRunnerOutput().execution);
+    expect(completed.body.executionEvidence).toEqual(localRunnerOutput().evidence);
+    expect(completed.body.verdictExplanation).toContain("Execution evidence was collected");
     expect(repositoryWorkspace.cleanup).toHaveBeenCalledWith(created.body.id);
     expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
   });
@@ -318,7 +378,14 @@ describe("investigation API", () => {
         throw new Error("runner failed");
       }
     };
-    const app = createTestApp({ scheduler, codexAdapter, runnerAdapter, repositoryWorkspace });
+    const app = createTestApp({
+      scheduler,
+      codexAdapter,
+      runnerAdapter,
+      repositoryWorkspace,
+      generatedTestStager: successfulGeneratedTestStager,
+      mode: "local"
+    });
 
     const created = await request(app).post("/api/investigations").send(validRequest);
     expect(created.body.status).toBe("created");
@@ -328,9 +395,104 @@ describe("investigation API", () => {
     expect(completed.body.status).toBe("execution_error");
     expect(completed.body.hypothesis).toBeDefined();
     expect(completed.body.analysisEvidence).toEqual(mockAnalysis().evidence);
-    expect(completed.body.generatedTestPath).toBe("tests/failspec.mock.spec.ts");
+    expect(completed.body.generatedTestPath).toBe(stagedGeneratedTestPath);
     expect(completed.body.generatedTestContent).toContain("test('mock'");
     expect(completed.body.execution).toBeUndefined();
+    expect(completed.body.executionEvidence).toBeUndefined();
+    expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { status: "rejected" as const, failure: { code: "disallowed_api" as const } },
+    { status: "failed" as const, failure: { code: "write_failed" as const } }
+  ])("preserves generated content and skips execution when staging $status", async (stagingResult) => {
+    const scheduler = new ManualWorkflowScheduler();
+    const repositoryWorkspace = createWorkspace();
+    const generatedTestStager: GeneratedTestStager = async () => stagingResult;
+    const runnerAdapter = new MockRunnerAdapter();
+    const run = vi.spyOn(runnerAdapter, "run");
+    const app = createTestApp({
+      scheduler,
+      repositoryWorkspace,
+      generatedTestStager,
+      runnerAdapter,
+      mode: "local"
+    });
+
+    const created = await request(app).post("/api/investigations").send(validRequest);
+    await scheduler.runNext();
+    const completed = await request(app).get(`/api/investigations/${created.body.id}`);
+
+    expect(completed.body.status).toBe("execution_error");
+    expect(completed.body.hypothesis.summary).toBe("Mock hypothesis for the reported failure.");
+    expect(completed.body.analysisEvidence).toEqual([]);
+    expect(completed.body.generatedTestContent).toContain("test('mock'");
+    expect(completed.body.generatedTestPath).toBeUndefined();
+    expect(completed.body.execution).toBeUndefined();
+    expect(completed.body.timeline.map((event: { status: string }) => event.status)).not.toContain("test_ready");
+    expect(run).not.toHaveBeenCalled();
+    expect(JSON.stringify(completed.body)).not.toContain(stagingResult.failure.code);
+    expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when a runner returns malformed output", async () => {
+    const scheduler = new ManualWorkflowScheduler();
+    const repositoryWorkspace = createWorkspace();
+    const runnerAdapter: RunnerAdapter = {
+      async run(_input: RunnerInput): Promise<RunnerOutput> {
+        void _input;
+        return { execution: localRunnerOutput().execution } as RunnerOutput;
+      }
+    };
+    const app = createTestApp({
+      scheduler,
+      repositoryWorkspace,
+      generatedTestStager: successfulGeneratedTestStager,
+      runnerAdapter,
+      mode: "local"
+    });
+
+    const created = await request(app).post("/api/investigations").send(validRequest);
+    await scheduler.runNext();
+    const completed = await request(app).get(`/api/investigations/${created.body.id}`);
+
+    expect(completed.body.status).toBe("execution_error");
+    expect(completed.body.generatedTestPath).toBe(stagedGeneratedTestPath);
+    expect(completed.body.execution).toBeUndefined();
+    expect(completed.body.executionEvidence).toBeUndefined();
+    expect(completed.body.verdictExplanation).toContain("returned invalid results");
+    expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    localRunnerOutput({ timedOut: true, testStatus: "timedOut" }),
+    localRunnerOutput({ timedOut: false, testStatus: "interrupted" }),
+    localRunnerOutput({
+      timedOut: true,
+      testStatus: "timedOut",
+      stdout: "Controlled Playwright cleanup failed.",
+      stderr: "Controlled process cleanup failed."
+    })
+  ])("preserves returned execution facts and evidence without assigning a verdict", async (output) => {
+    const scheduler = new ManualWorkflowScheduler();
+    const repositoryWorkspace = createWorkspace();
+    const runnerAdapter = new MockRunnerAdapter(output);
+    const app = createTestApp({
+      scheduler,
+      repositoryWorkspace,
+      generatedTestStager: successfulGeneratedTestStager,
+      runnerAdapter,
+      mode: "local"
+    });
+
+    const created = await request(app).post("/api/investigations").send(validRequest);
+    await scheduler.runNext();
+    const completed = await request(app).get(`/api/investigations/${created.body.id}`);
+
+    expect(completed.body.status).toBe("execution_error");
+    expect(completed.body.execution).toEqual(output.execution);
+    expect(completed.body.executionEvidence).toEqual(output.evidence);
+    expect(completed.body.verdictExplanation).toContain("Execution evidence was collected");
     expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
   });
 
@@ -362,7 +524,12 @@ describe("investigation API", () => {
     const repositoryWorkspace = createWorkspace({
       cleanup: { status: "failed", message: "cleanup internals" }
     });
-    const app = createTestApp({ scheduler, repositoryWorkspace });
+    const app = createTestApp({
+      scheduler,
+      repositoryWorkspace,
+      generatedTestStager: successfulGeneratedTestStager,
+      mode: "local"
+    });
 
     const created = await request(app).post("/api/investigations").send(validRequest);
     await scheduler.runNext();
@@ -371,6 +538,7 @@ describe("investigation API", () => {
     expect(completed.body.status).toBe("execution_error");
     expect(completed.body.timeline.map((event: { status: string }) => event.status)).not.toContain("verified");
     expect(completed.body.execution).toEqual(mockExecution());
+    expect(completed.body.executionEvidence).toEqual(mockRunnerOutput().evidence);
     expect(completed.body.verdictExplanation).toContain("could not be cleaned up safely");
     expect(JSON.stringify(completed.body)).not.toContain("cleanup internals");
     expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
@@ -532,15 +700,39 @@ function createTestApp(overrides: Partial<{
   runnerAdapter: RunnerAdapter;
   scheduler: WorkflowScheduler;
   repositoryWorkspace: RepositoryWorkspace;
+  generatedTestStager: GeneratedTestStager;
+  mode: InvestigationRuntimeMode;
 }> = {}) {
   return createApp({
     store: overrides.store ?? new JsonInvestigationStore(storageDirectory),
     codexAdapter: overrides.codexAdapter ?? new MockCodexAdapter(),
     runnerAdapter: overrides.runnerAdapter ?? new MockRunnerAdapter(),
     scheduler: overrides.scheduler ?? new ManualWorkflowScheduler(),
-    repositoryWorkspace: overrides.repositoryWorkspace ?? new PassThroughRepositoryWorkspace()
+    repositoryWorkspace: overrides.repositoryWorkspace ?? new PassThroughRepositoryWorkspace(),
+    generatedTestStager: overrides.generatedTestStager ?? mockGeneratedTestStager,
+    mode: overrides.mode ?? "mock"
   });
 }
+
+const mockGeneratedTestStager: GeneratedTestStager = async (
+  workspacePath: string,
+  content: string
+): Promise<GeneratedTestStagingResult> => {
+  void workspacePath;
+  void content;
+  return { status: "staged", stagedTestPath: "tests/failspec.mock.spec.ts" };
+};
+
+const stagedGeneratedTestPath = "tests/generated/failspec.generated.spec.ts";
+
+const successfulGeneratedTestStager: GeneratedTestStager = async (
+  workspacePath: string,
+  content: string
+) => {
+  void workspacePath;
+  void content;
+  return { status: "staged", stagedTestPath: stagedGeneratedTestPath };
+};
 
 function createWorkspace(options: {
   workspacePath?: string;
@@ -639,6 +831,44 @@ function mockExecution() {
     stderr: "",
     durationMs: 1,
     artifacts: []
+  };
+}
+
+function mockRunnerOutput(): RunnerOutput {
+  return {
+    execution: mockExecution(),
+    evidence: {
+      testTitle: "Mock regression test",
+      testStatus: "passed",
+      consoleErrors: [],
+      pageErrors: [],
+      artifactPaths: []
+    }
+  };
+}
+
+function localRunnerOutput(options: Partial<{
+  timedOut: boolean;
+  testStatus: NonNullable<RunnerOutput["evidence"]["testStatus"]>;
+  stdout: string;
+  stderr: string;
+}> = {}): RunnerOutput {
+  return {
+    execution: {
+      command: "controlled_playwright_generated_test",
+      exitCode: null,
+      timedOut: options.timedOut ?? false,
+      stdout: options.stdout ?? "Playwright execution completed.",
+      stderr: options.stderr ?? "",
+      durationMs: 1,
+      artifacts: []
+    },
+    evidence: {
+      testStatus: options.testStatus ?? "passed",
+      consoleErrors: [],
+      pageErrors: [],
+      artifactPaths: []
+    }
   };
 }
 

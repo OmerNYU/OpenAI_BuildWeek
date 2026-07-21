@@ -2,17 +2,28 @@ import { randomUUID } from "node:crypto";
 import {
   type Investigation,
   type InvestigationRequest,
-  type InvestigationStatus
+  type InvestigationStatus,
+  generatedTestStagingResultSchema,
+  runnerOutputSchema,
+  type GeneratedTestStagingResult
 } from "@failspec/contracts";
 import {
   assertTransition,
   canTransition,
   type CodexAdapter,
+  type GeneratedTest,
   type RunnerAdapter
 } from "@failspec/core";
 import type { InvestigationStore } from "../storage/investigation-store.js";
 import type { WorkflowScheduler } from "../scheduling/workflow-scheduler.js";
 import type { RepositoryWorkspace } from "../repository/repository-workspace.js";
+
+export type InvestigationRuntimeMode = "mock" | "local";
+
+export type GeneratedTestStager = (
+  worktreePath: string,
+  content: string
+) => Promise<GeneratedTestStagingResult>;
 
 export class InvestigationService {
   constructor(
@@ -20,7 +31,9 @@ export class InvestigationService {
     private readonly codexAdapter: CodexAdapter,
     private readonly runnerAdapter: RunnerAdapter,
     private readonly scheduler: WorkflowScheduler,
-    private readonly repositoryWorkspace: RepositoryWorkspace
+    private readonly repositoryWorkspace: RepositoryWorkspace,
+    private readonly generatedTestStager: GeneratedTestStager,
+    private readonly mode: InvestigationRuntimeMode
   ) {}
 
   async create(request: InvestigationRequest): Promise<Investigation> {
@@ -99,19 +112,38 @@ export class InvestigationService {
         hypothesis: analysis.hypothesis
       });
       investigation.generatedTestContent = generatedTest.content;
-      investigation.generatedTestPath = generatedTest.path;
+      await persist();
+      const staging = generatedTestStagingResultSchema.safeParse(
+        await this.generatedTestStager(preparation.workspace.workspacePath, generatedTest.content)
+      );
+      if (!staging.success || staging.data.status !== "staged") {
+        throw new WorkflowFailure("The generated test could not be staged safely.");
+      }
+      const stagedGeneratedTest: GeneratedTest = {
+        content: generatedTest.content,
+        path: staging.data.stagedTestPath
+      };
+      investigation.generatedTestPath = stagedGeneratedTest.path;
       await transition("test_ready", "Generated test is ready.");
       await transition("executing", "Running the generated test.");
-      const runnerOutput = await this.runnerAdapter.run({
+      const runnerOutput = runnerOutputSchema.safeParse(await this.runnerAdapter.run({
         repositoryPath: preparation.workspace.workspacePath,
-        generatedTest
-      });
-      investigation.execution = runnerOutput.execution;
-      investigation.verdictExplanation = "The deterministic mock runner returned the expected reproduction signal.";
-      investigation.recommendedNextStep = "Review the generated regression test before running it against a real repository.";
+        generatedTest: stagedGeneratedTest
+      }));
+      if (!runnerOutput.success) {
+        throw new WorkflowFailure("The generated test execution returned invalid results.");
+      }
+      investigation.execution = runnerOutput.data.execution;
+      investigation.executionEvidence = runnerOutput.data.evidence;
+      await persist();
       if (!(await cleanup())) {
         throw new WorkflowFailure("The repository workspace could not be cleaned up safely.");
       }
+      if (this.mode === "local") {
+        throw new WorkflowFailure("Execution evidence was collected, but verification is unavailable.");
+      }
+      investigation.verdictExplanation = "The deterministic mock runner returned the expected reproduction signal.";
+      investigation.recommendedNextStep = "Review the generated regression test before running it against a real repository.";
       await transition("verified", "Mock reproduction verified.");
       return investigation;
     } catch (error: unknown) {
@@ -133,6 +165,7 @@ export class InvestigationService {
     investigation.generatedTestPath ??= current.generatedTestPath;
     investigation.generatedTestContent ??= current.generatedTestContent;
     investigation.execution ??= current.execution;
+    investigation.executionEvidence ??= current.executionEvidence;
 
     if (!canTransition(investigation.status, "execution_error")) {
       throw error;
