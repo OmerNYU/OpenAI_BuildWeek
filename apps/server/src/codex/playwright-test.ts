@@ -1,9 +1,11 @@
-import { validateGeneratedTestSource } from "../generated-test/index.js";
+import {
+  validateGeneratedTestSource,
+  type GeneratedTestSourceFailure
+} from "../generated-test/index.js";
 
-export interface PlaywrightTestValidationResult {
-  valid: boolean;
-  errors: string[];
-}
+export type PlaywrightTestValidationResult =
+  | { valid: true; errors: [] }
+  | { valid: false; errors: string[]; failure: GeneratedTestSourceFailure };
 
 export function validateGeneratedPlaywrightTest(
   content: string
@@ -15,6 +17,7 @@ export function validateGeneratedPlaywrightTest(
 
   return {
     valid: false,
+    failure: validation.failure,
     errors: [
       validation.failure === "typescript_parse_failed"
         ? "Generated test must be valid TypeScript"

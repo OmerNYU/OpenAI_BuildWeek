@@ -59,6 +59,18 @@ export const generatedTestPolicyDescription = `
 - Allowed request calls: ${capabilityMethods("request").map((method) => `request.${method}`).join(", ")}.
 - Allowed locator calls: ${capabilityMethods("locator").map((method) => `locator.${method}`).join(", ")}.
 - Allowed assertions: ${capabilityMethods("expect").map((method) => `expect(...).${method}`).join(", ")}.
+- Use this exact shape, replacing only literal titles, selectors, routes, and expected values:
+\`\`\`ts
+import { expect, test } from '@playwright/test';
+
+test('reports the expected checkout total', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Quantity').fill('2');
+  await page.getByRole('button', { name: 'Complete checkout' }).click();
+  await expect(page.getByRole('status')).toHaveText('Charged total: $24.00');
+});
+\`\`\`
+- Do not add declarations, helpers, aliases, chained locator methods, or other statements.
 `.trim();
 
 export function validateGeneratedTestSource(content: string): GeneratedTestSourceValidationResult {

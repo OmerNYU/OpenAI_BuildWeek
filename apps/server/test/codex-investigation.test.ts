@@ -86,6 +86,7 @@ describe("CodexInvestigationAdapter", () => {
     });
     expect(calls).toHaveLength(3);
     expect(calls[2]?.prompt).toContain("Your previous response was invalid");
+    expect(calls[2]?.prompt).toContain("disallowed_api");
   });
 
   it("does not retry invalid analysis output", async () => {

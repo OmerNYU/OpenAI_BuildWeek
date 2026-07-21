@@ -53,5 +53,8 @@ describe("Codex prompts", () => {
     expect(prompt).toContain("Reuse selectors, routes, and behavioral expectations from the repository only when they are compatible with this policy.");
     expect(prompt).toContain("This policy overrides incompatible repository helpers, custom fixtures, variables, aliases, page objects, and conventions.");
     expect(prompt).toContain("Include at least one approved interaction and at least one assertion.");
+    expect(prompt).toContain("Use this exact shape, replacing only literal titles, selectors, routes, and expected values:");
+    expect(prompt).toContain("await page.getByLabel('Quantity').fill('2');");
+    expect(prompt).toContain("await expect(page.getByRole('status')).toHaveText('Charged total: $24.00');");
   });
 });

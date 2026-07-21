@@ -14,6 +14,7 @@ describe("validateGeneratedPlaywrightTest", () => {
 
     expect(validateGeneratedPlaywrightTest(content)).toEqual({
       valid: false,
+      failure: "disallowed_api",
       errors: ["Generated test must match the approved generated-test policy"]
     });
   });
@@ -24,6 +25,7 @@ describe("validateGeneratedPlaywrightTest", () => {
 
     expect(validateGeneratedPlaywrightTest(content)).toEqual({
       valid: false,
+      failure: "typescript_parse_failed",
       errors: ["Generated test must be valid TypeScript"]
     });
   });
@@ -34,6 +36,7 @@ describe("validateGeneratedPlaywrightTest", () => {
 
     expect(validateGeneratedPlaywrightTest(content)).toEqual({
       valid: false,
+      failure: "disallowed_api",
       errors: ["Generated test must match the approved generated-test policy"]
     });
   });
@@ -44,6 +47,7 @@ describe("validateGeneratedPlaywrightTest", () => {
 
     expect(validateGeneratedPlaywrightTest(content)).toEqual({
       valid: false,
+      failure: "disallowed_api",
       errors: ["Generated test must match the approved generated-test policy"]
     });
   });

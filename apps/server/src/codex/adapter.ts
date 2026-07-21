@@ -27,7 +27,7 @@ export class CodexInvestigationAdapter implements CodexAdapter {
         const validation = validateGeneratedPlaywrightTest(generated.generatedTestContent);
 
         if (!validation.valid) {
-          throw new Error(validation.errors.join("; "));
+          throw new Error(`${validation.errors.join("; ")} (${validation.failure})`);
         }
 
         return generated;
