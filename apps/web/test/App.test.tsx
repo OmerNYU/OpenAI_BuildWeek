@@ -228,6 +228,91 @@ describe("App", () => {
   });
 
   it.each([
+    ["a POSIX absolute path", "/private/failspec/worktree/tests/checkout.spec.ts"],
+    ["a Windows absolute path", "C:\\Users\\hassan\\worktree\\trace.zip"],
+    ["a traversal path", "test-results\\..\\secret.zip"]
+  ])("suppresses %s from the failure location", async (_description, unsafePath) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
+      executionEvidence: {
+        testTitle: "checkout validation remains observable",
+        failureLocation: { file: unsafePath },
+        consoleErrors: [],
+        pageErrors: [],
+        artifactPaths: []
+      }
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const evidence = await screen.findByRole("region", { name: "Execution evidence" });
+    expect(within(evidence).getByText("checkout validation remains observable")).toBeTruthy();
+    expect(within(evidence).queryByText("Failure location")).toBeNull();
+    expect(screen.queryByText(unsafePath)).toBeNull();
+  });
+
+  it("renders only safe relative artifact paths", async () => {
+    const posixPath = "/private/failspec/worktree/trace.zip";
+    const windowsPath = "C:\\Users\\hassan\\worktree\\trace.zip";
+    const traversalPath = "test-results/../../secret.zip";
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
+      executionEvidence: {
+        consoleErrors: [],
+        pageErrors: [],
+        artifactPaths: ["test-results/trace.zip", posixPath, windowsPath, traversalPath]
+      }
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const evidence = await screen.findByRole("region", { name: "Execution evidence" });
+    const artifacts = within(evidence).getByRole("list", { name: "Artifact paths" });
+    expect(within(artifacts).getByText("test-results/trace.zip", { selector: "code" })).toBeTruthy();
+    expect(screen.queryByText(posixPath)).toBeNull();
+    expect(screen.queryByText(windowsPath)).toBeNull();
+    expect(screen.queryByText(traversalPath)).toBeNull();
+    expect(within(artifacts).queryByRole("link")).toBeNull();
+  });
+
+  it("uses the execution-evidence fallback when only unsafe paths are supplied", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
+      executionEvidence: {
+        failureLocation: { file: "/private/failspec/worktree/tests/checkout.spec.ts" },
+        consoleErrors: [],
+        pageErrors: [],
+        artifactPaths: ["C:\\Users\\hassan\\worktree\\trace.zip", "../secret.zip"]
+      }
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const evidence = await screen.findByRole("region", { name: "Execution evidence" });
+    expect(within(evidence).getByText("No structured execution evidence was recorded for this investigation.")).toBeTruthy();
+    expect(evidence.querySelector("dl")).toBeNull();
+    expect(within(evidence).queryByRole("list", { name: "Artifact paths" })).toBeNull();
+  });
+
+  it("renders console-only execution evidence without an empty definition list", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
+      executionEvidence: {
+        consoleErrors: ["Checkout request failed."],
+        pageErrors: [],
+        artifactPaths: []
+      }
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const evidence = await screen.findByRole("region", { name: "Execution evidence" });
+    const consoleErrors = within(evidence).getByRole("list", { name: "Console errors" });
+    expect(within(consoleErrors).getByRole("listitem").textContent).toBe("Checkout request failed.");
+    expect(evidence.querySelector("dl")).toBeNull();
+  });
+
+  it.each([
     ["omits", {}],
     ["contains only empty arrays in", {
       executionEvidence: { consoleErrors: [], pageErrors: [], artifactPaths: [] }

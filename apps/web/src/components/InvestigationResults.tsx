@@ -43,17 +43,24 @@ export function InvestigationResults({ investigation }: { investigation?: Invest
 }
 
 function ExecutionEvidenceSection({ evidence }: { evidence?: Investigation["executionEvidence"] }) {
-  const hasDetails = Boolean(evidence && (
+  const safeFailureLocation = evidence?.failureLocation && isSafeRelativeEvidencePath(evidence.failureLocation.file)
+    ? evidence.failureLocation
+    : undefined;
+  const safeArtifactPaths = evidence?.artifactPaths.filter(isSafeRelativeEvidencePath) ?? [];
+  const hasDefinitionDetails = Boolean(evidence && (
     evidence.testTitle !== undefined ||
     evidence.testStatus !== undefined ||
     evidence.assertionFailureMessage !== undefined ||
     evidence.expectedValue !== undefined ||
     evidence.actualValue !== undefined ||
-    evidence.failureLocation !== undefined ||
+    safeFailureLocation !== undefined
+  ));
+  const hasListDetails = Boolean(evidence && (
     evidence.consoleErrors.length > 0 ||
     evidence.pageErrors.length > 0 ||
-    evidence.artifactPaths.length > 0
+    safeArtifactPaths.length > 0
   ));
+  const hasDetails = hasDefinitionDetails || hasListDetails;
 
   return (
     <section className="execution-evidence" aria-labelledby="execution-evidence-heading">
@@ -61,17 +68,17 @@ function ExecutionEvidenceSection({ evidence }: { evidence?: Investigation["exec
       <p className="execution-evidence-intro">Structured, sanitized observations collected while running the generated test. These are execution facts, not the final verification verdict.</p>
       {!hasDetails || !evidence ? <p>No structured execution evidence was recorded for this investigation.</p> : (
         <>
-          <dl className="execution-evidence-details">
+          {hasDefinitionDetails ? <dl className="execution-evidence-details">
             {evidence.testTitle !== undefined ? <><dt>Test title</dt><dd>{evidence.testTitle}</dd></> : null}
             {evidence.testStatus !== undefined ? <><dt>Test status</dt><dd>{formatTestStatus(evidence.testStatus)}</dd></> : null}
             {evidence.assertionFailureMessage !== undefined ? <><dt>Assertion failure</dt><dd>{evidence.assertionFailureMessage}</dd></> : null}
             {evidence.expectedValue !== undefined ? <><dt>Expected value</dt><dd>{evidence.expectedValue}</dd></> : null}
             {evidence.actualValue !== undefined ? <><dt>Actual value</dt><dd>{evidence.actualValue}</dd></> : null}
-            {evidence.failureLocation ? <><dt>Failure location</dt><dd><code>{evidence.failureLocation.file}</code>{evidence.failureLocation.line !== undefined ? `:${evidence.failureLocation.line}` : ""}{evidence.failureLocation.column !== undefined ? `:${evidence.failureLocation.column}` : ""}</dd></> : null}
-          </dl>
+            {safeFailureLocation ? <><dt>Failure location</dt><dd><code>{safeFailureLocation.file}</code>{safeFailureLocation.line !== undefined ? `:${safeFailureLocation.line}` : ""}{safeFailureLocation.column !== undefined ? `:${safeFailureLocation.column}` : ""}</dd></> : null}
+          </dl> : null}
           {evidence.consoleErrors.length ? <EvidenceList label="Console errors" items={evidence.consoleErrors} /> : null}
           {evidence.pageErrors.length ? <EvidenceList label="Page errors" items={evidence.pageErrors} /> : null}
-          {evidence.artifactPaths.length ? <EvidenceList label="Artifact paths" items={evidence.artifactPaths} codeItems /> : null}
+          {safeArtifactPaths.length ? <EvidenceList label="Artifact paths" items={safeArtifactPaths} codeItems /> : null}
         </>
       )}
     </section>
@@ -91,4 +98,10 @@ function EvidenceList({ label, items, codeItems = false }: { label: string; item
 
 function formatTestStatus(status: string): string {
   return status.replace(/([A-Z])/g, " $1").toLowerCase();
+}
+
+function isSafeRelativeEvidencePath(value: string): boolean {
+  const hasAbsolutePrefix = value.startsWith("/") || value.startsWith("\\") || /^[A-Za-z]:/.test(value);
+  const hasTraversalSegment = value.split(/[\\/]+/).some((segment) => segment === "..");
+  return !hasAbsolutePrefix && !hasTraversalSegment;
 }
