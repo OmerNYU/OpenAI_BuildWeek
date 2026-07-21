@@ -7,9 +7,10 @@ export function InvestigationResults({ investigation }: { investigation?: Invest
   }
 
   const isExecutionError = investigation.status === "execution_error";
+  const isOperationalExecutionError = isExecutionError && investigation.verification === undefined;
   return (
     <div className={isExecutionError ? "result result-error" : "result"}>
-      <p><strong>{isExecutionError ? "Execution failure" : "Terminal status"}:</strong> {investigation.status.replaceAll("_", " ")}</p>
+      <p><strong>{isOperationalExecutionError ? "Execution failure" : "Terminal status"}:</strong> {investigation.status.replaceAll("_", " ")}</p>
       {investigation.hypothesis ? (
         <>
           <p><strong>Hypothesis:</strong> {investigation.hypothesis.summary}</p>
@@ -36,9 +37,41 @@ export function InvestigationResults({ investigation }: { investigation?: Invest
       ) : null}
       {investigation.generatedTestPath ? <p><strong>Generated test path:</strong> {investigation.generatedTestPath}</p> : null}
       <ExecutionEvidenceSection evidence={investigation.executionEvidence} />
-      {investigation.verdictExplanation ? <p><strong>Verdict:</strong> {investigation.verdictExplanation}</p> : null}
-      {investigation.recommendedNextStep ? <p><strong>Next step:</strong> {investigation.recommendedNextStep}</p> : null}
+      {investigation.verification ? <VerificationResultSection verification={investigation.verification} /> : (
+        <>
+          {investigation.verdictExplanation ? <p><strong>Verdict:</strong> {investigation.verdictExplanation}</p> : null}
+          {investigation.recommendedNextStep ? <p><strong>Next step:</strong> {investigation.recommendedNextStep}</p> : null}
+        </>
+      )}
     </div>
+  );
+}
+
+function VerificationResultSection({ verification }: { verification: NonNullable<Investigation["verification"]> }) {
+  return (
+    <section className="verification-result" aria-labelledby="verification-result-heading">
+      <h3 id="verification-result-heading">Verification result</h3>
+      <p className="verification-result-intro">Deterministic classification of the validated execution evidence collected from the generated test.</p>
+      <dl className="verification-result-details">
+        <dt>Verdict</dt>
+        <dd>{formatVerificationVerdict(verification.verdict)}</dd>
+        <dt>Explanation</dt>
+        <dd>{verification.explanation}</dd>
+        <dt>Recommended next step</dt>
+        <dd>{verification.recommendedNextStep}</dd>
+      </dl>
+      {verification.supportingSignals.length ? (
+        <div>
+          <h4>Supporting signals</h4>
+          <p className="verification-signals-intro">Bounded, structured signals that explain the classified result.</p>
+          <ul className="verification-signals-list" aria-label="Supporting signals">
+            {verification.supportingSignals.map((signal, index) => (
+              <li key={`${signal.type}-${index}`}><strong>{formatVerificationSignalType(signal.type)}:</strong> {isPathSignal(signal.type) ? <code>{signal.message}</code> : signal.message}</li>
+            ))}
+          </ul>
+        </div>
+      ) : <p>No additional supporting signals were recorded.</p>}
+    </section>
   );
 }
 
@@ -98,6 +131,25 @@ function EvidenceList({ label, items, codeItems = false }: { label: string; item
 
 function formatTestStatus(status: string): string {
   return status.replace(/([A-Z])/g, " $1").toLowerCase();
+}
+
+function formatVerificationVerdict(verdict: NonNullable<Investigation["verification"]>["verdict"]): string {
+  const labels = {
+    verified: "Verified",
+    partial: "Partial evidence",
+    not_reproduced: "Not reproduced",
+    execution_error: "Execution error"
+  };
+  return labels[verdict];
+}
+
+function formatVerificationSignalType(type: string): string {
+  const readable = type.replaceAll("_", " ");
+  return `${readable.charAt(0).toUpperCase()}${readable.slice(1)}`;
+}
+
+function isPathSignal(type: string): boolean {
+  return type === "failure_location" || type === "artifact_path";
 }
 
 function isSafeRelativeEvidencePath(value: string): boolean {

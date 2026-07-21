@@ -411,6 +411,201 @@ describe("App", () => {
     expect(within(evidence).getByText("failed")).toBeTruthy();
   });
 
+  it.each([
+    ["verified", "Verified"],
+    ["partial", "Partial evidence"],
+    ["not_reproduced", "Not reproduced"],
+    ["execution_error", "Execution error"]
+  ] as const)("renders the structured %s verification verdict", async (verdict, label) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation(
+      verdict,
+      undefined,
+      undefined,
+      { verification: makeVerification({ verdict }) }
+    )));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const verification = await screen.findByRole("region", { name: "Verification result" });
+    expect(within(verification).getByText(label)).toBeTruthy();
+    expect(within(verification).getByText("Classifier explanation.")).toBeTruthy();
+    expect(within(verification).getByText("Review the classified evidence.")).toBeTruthy();
+    expect(within(verification).queryByText("The deterministic mock runner returned the expected reproduction signal.")).toBeNull();
+  });
+
+  it("renders ordered, duplicate, and unknown supporting signals without changing their messages", async () => {
+    const signals = [
+      { type: "test_status", message: "failed" },
+      { type: "console_error", message: "The validation state was empty." },
+      { type: "console_error", message: "The validation state was empty." },
+      { type: "artifact_path", message: "test-results/trace.zip" },
+      { type: "failure_location", message: "tests/checkout.spec.ts:42" },
+      { type: "custom_classifier_signal", message: "<classifier signal>" }
+    ];
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
+      verification: makeVerification({ supportingSignals: signals })
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const verification = await screen.findByRole("region", { name: "Verification result" });
+    const supportingSignals = within(verification).getByRole("list", { name: "Supporting signals" });
+    expect(within(supportingSignals).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "Test status: failed",
+      "Console error: The validation state was empty.",
+      "Console error: The validation state was empty.",
+      "Artifact path: test-results/trace.zip",
+      "Failure location: tests/checkout.spec.ts:42",
+      "Custom classifier signal: <classifier signal>"
+    ]);
+    expect(within(supportingSignals).getByText("test-results/trace.zip", { selector: "code" })).toBeTruthy();
+    expect(within(supportingSignals).getByText("tests/checkout.spec.ts:42", { selector: "code" })).toBeTruthy();
+    expect(within(supportingSignals).queryByRole("link")).toBeNull();
+    expect(within(verification).queryByRole("img")).toBeNull();
+  });
+
+  it("shows the structured-verification signal fallback without an empty list", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
+      verification: makeVerification({ supportingSignals: [] })
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const verification = await screen.findByRole("region", { name: "Verification result" });
+    expect(within(verification).getByText("No additional supporting signals were recorded.")).toBeTruthy();
+    expect(within(verification).queryByRole("list", { name: "Supporting signals" })).toBeNull();
+  });
+
+  it("renders the deterministic mock verified result", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
+      verification: makeVerification({
+        explanation: "The deterministic mock runner returned the expected reproduction signal.",
+        recommendedNextStep: "Review the generated regression test before running it against a real repository.",
+        supportingSignals: [{ type: "mock_verification", message: "Deterministic mock verification completed." }]
+      })
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const verification = await screen.findByRole("region", { name: "Verification result" });
+    expect(within(verification).getByText("Verified")).toBeTruthy();
+    expect(within(verification).getByText("Deterministic mock verification completed.")).toBeTruthy();
+  });
+
+  it("keeps classified and operational execution errors distinct", async () => {
+    const classified = makeInvestigation("execution_error", undefined, "classified-error", {
+      verification: makeVerification({
+        verdict: "execution_error",
+        explanation: "The evidence could not be classified as a valid reproduction.",
+        recommendedNextStep: "Inspect the collected evidence."
+      })
+    });
+    const operational = makeInvestigation("execution_error", undefined, "operational-error", {
+      verdictExplanation: "The investigation workflow could not complete safely.",
+      recommendedNextStep: "Try the investigation again.",
+      verification: undefined
+    });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(classified))
+      .mockResolvedValueOnce(jsonResponse(operational));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const classifiedSection = await screen.findByRole("region", { name: "Verification result" });
+    expect(screen.getByText("Terminal status:")).toBeTruthy();
+    expect(within(classifiedSection).getByText("Execution error")).toBeTruthy();
+    expect(within(classifiedSection).getByText("Inspect the collected evidence.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Start another investigation" }));
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    expect(await screen.findByText("The investigation workflow could not complete safely.")).toBeTruthy();
+    expect(screen.getByText("Execution failure:")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Verification result" })).toBeNull();
+    expect(screen.queryByText("No additional supporting signals were recorded.")).toBeNull();
+  });
+
+  it("keeps legacy records renderable when structured verification and legacy fields are absent", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
+      verification: undefined,
+      verdictExplanation: undefined,
+      recommendedNextStep: undefined
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    await screen.findByText("Mock hypothesis");
+    expect(screen.queryByRole("region", { name: "Verification result" })).toBeNull();
+    expect(screen.queryByText(/^Verdict:/)).toBeNull();
+    expect(screen.queryByText(/^Next step:/)).toBeNull();
+  });
+
+  it("keeps analysis, execution, and verification evidence in separate labelled sections", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("verified", undefined, undefined, {
+      analysisEvidence: [{ sourcePath: "src/checkout.tsx", observation: "The validation state is missing." }],
+      executionEvidence: {
+        consoleErrors: ["Checkout request failed."],
+        pageErrors: [],
+        artifactPaths: []
+      },
+      verification: makeVerification({
+        supportingSignals: [{ type: "test_status", message: "failed" }]
+      })
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const analysis = await screen.findByRole("region", { name: "Analysis evidence" });
+    const execution = screen.getByRole("region", { name: "Execution evidence" });
+    const verification = screen.getByRole("region", { name: "Verification result" });
+    expect(within(analysis).getByRole("listitem").textContent).toContain("The validation state is missing.");
+    expect(within(execution).getByText("Checkout request failed.")).toBeTruthy();
+    expect(within(execution).queryByText("failed")).toBeNull();
+    expect(within(verification).getByRole("listitem").textContent).toBe("Test status: failed");
+    expect(within(verification).queryByText("Checkout request failed.")).toBeNull();
+    expect(within(verification).queryByText("The validation state is missing.")).toBeNull();
+  });
+
+  it("does not infer a verified result from execution facts when structured verification disagrees", async () => {
+    const rawCommand = "npx playwright test tests/checkout.spec.ts --reporter=json";
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeInvestigation("not_reproduced", undefined, undefined, {
+      execution: {
+        command: rawCommand,
+        exitCode: 1,
+        timedOut: false,
+        stdout: "sensitive stdout",
+        stderr: "sensitive stderr",
+        durationMs: 100,
+        artifacts: ["raw-artifact-path"]
+      },
+      executionEvidence: {
+        testStatus: "failed",
+        consoleErrors: [],
+        pageErrors: [],
+        artifactPaths: []
+      },
+      verification: makeVerification({ verdict: "not_reproduced" })
+    })));
+    render(<App />);
+    fillRequiredFields(validRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Start investigation" }));
+
+    const verification = await screen.findByRole("region", { name: "Verification result" });
+    expect(within(verification).getByText("Not reproduced")).toBeTruthy();
+    expect(within(verification).queryByText("Verified")).toBeNull();
+    expect(screen.queryByText(rawCommand)).toBeNull();
+    expect(screen.queryByText("sensitive stdout")).toBeNull();
+    expect(screen.queryByText("sensitive stderr")).toBeNull();
+    expect(screen.queryByText("raw-artifact-path")).toBeNull();
+  });
+
   it("polls the investigation ID and renders updated timeline events in API order", async () => {
     vi.useFakeTimers();
     const created = makeInvestigation("analyzing", ["created", "preflight", "analyzing"]);
@@ -641,6 +836,9 @@ function makeInvestigation(
     analysisEvidence?: Investigation["analysisEvidence"];
     executionEvidence?: Investigation["executionEvidence"];
     execution?: Investigation["execution"];
+    verification?: Investigation["verification"];
+    verdictExplanation?: Investigation["verdictExplanation"];
+    recommendedNextStep?: Investigation["recommendedNextStep"];
   } = {}
 ): Investigation {
   return {
@@ -667,7 +865,22 @@ function makeInvestigation(
     updatedAt: "2026-07-18T12:00:00.000Z",
     ...("analysisEvidence" in options ? { analysisEvidence: options.analysisEvidence } : {}),
     ...("executionEvidence" in options ? { executionEvidence: options.executionEvidence } : {}),
-    ...("execution" in options ? { execution: options.execution } : {})
+    ...("execution" in options ? { execution: options.execution } : {}),
+    ...("verification" in options ? { verification: options.verification } : {}),
+    ...("verdictExplanation" in options ? { verdictExplanation: options.verdictExplanation } : {}),
+    ...("recommendedNextStep" in options ? { recommendedNextStep: options.recommendedNextStep } : {})
+  };
+}
+
+function makeVerification(
+  overrides: Partial<NonNullable<Investigation["verification"]>> = {}
+): NonNullable<Investigation["verification"]> {
+  return {
+    verdict: "verified",
+    explanation: "Classifier explanation.",
+    recommendedNextStep: "Review the classified evidence.",
+    supportingSignals: [{ type: "mock_verification", message: "Deterministic mock verification completed." }],
+    ...overrides
   };
 }
 

@@ -67,6 +67,16 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 
 .execution-evidence-list { padding-left: 1.4rem; }
 
+.verification-result { border-top: 1px solid #d9e1e8; margin-top: 1rem; padding-top: 1rem; }
+
+.verification-result-intro, .verification-signals-intro { color: #52606d; }
+
+.verification-result-details { display: grid; gap: 0.25rem; }
+
+.verification-result-details dd { margin: 0 0 0.5rem; }
+
+.verification-signals-list { padding-left: 1.4rem; }
+
 @media (max-width: 640px) {
   .form-grid { grid-template-columns: 1fr; }
 }
