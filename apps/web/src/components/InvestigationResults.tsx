@@ -90,6 +90,7 @@ function ExecutionEvidenceSection({ evidence }: { evidence?: Investigation["exec
     ? evidence.failureLocation
     : undefined;
   const safeArtifactPaths = evidence?.artifactPaths.filter(isSafeRelativeEvidencePath) ?? [];
+  const hasAssertionSummary = evidence?.expectedValue !== undefined && evidence.actualValue !== undefined;
   const hasDefinitionDetails = Boolean(evidence && (
     evidence.testTitle !== undefined ||
     evidence.testStatus !== undefined ||
@@ -114,9 +115,12 @@ function ExecutionEvidenceSection({ evidence }: { evidence?: Investigation["exec
           {hasDefinitionDetails ? <dl className="execution-evidence-details">
             {evidence.testTitle !== undefined ? <><dt>Test title</dt><dd>{evidence.testTitle}</dd></> : null}
             {evidence.testStatus !== undefined ? <><dt>Test status</dt><dd>{formatTestStatus(evidence.testStatus)}</dd></> : null}
-            {evidence.assertionFailureMessage !== undefined ? <><dt>Assertion failure</dt><dd>{evidence.assertionFailureMessage}</dd></> : null}
-            {evidence.expectedValue !== undefined ? <><dt>Expected value</dt><dd>{evidence.expectedValue}</dd></> : null}
-            {evidence.actualValue !== undefined ? <><dt>Actual value</dt><dd>{evidence.actualValue}</dd></> : null}
+            {hasAssertionSummary ? <><dt>Expected</dt><dd>{evidence.expectedValue}</dd><dt>Received</dt><dd>{evidence.actualValue}</dd></> : null}
+            {evidence.assertionFailureMessage !== undefined ? (
+              hasAssertionSummary ? <><dt>Assertion details</dt><dd><details><summary>Show technical assertion details</summary><p>{evidence.assertionFailureMessage}</p></details></dd></> : <><dt>Assertion failure</dt><dd>{evidence.assertionFailureMessage}</dd></>
+            ) : null}
+            {!hasAssertionSummary && evidence.expectedValue !== undefined ? <><dt>Expected value</dt><dd>{evidence.expectedValue}</dd></> : null}
+            {!hasAssertionSummary && evidence.actualValue !== undefined ? <><dt>Actual value</dt><dd>{evidence.actualValue}</dd></> : null}
             {safeFailureLocation ? <><dt>Failure location</dt><dd><code>{safeFailureLocation.file}</code>{safeFailureLocation.line !== undefined ? `:${safeFailureLocation.line}` : ""}{safeFailureLocation.column !== undefined ? `:${safeFailureLocation.column}` : ""}</dd></> : null}
           </dl> : null}
           {evidence.consoleErrors.length ? <EvidenceList label="Console errors" items={evidence.consoleErrors} /> : null}

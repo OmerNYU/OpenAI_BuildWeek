@@ -13,6 +13,7 @@ import type {
   VerificationResult
 } from "@failspec/contracts";
 import { codexAnalysisResultSchema } from "@failspec/contracts";
+import { CodexFailure } from "../src/codex/failure.js";
 import {
   MockCodexAdapter,
   MockRunnerAdapter,
@@ -202,6 +203,10 @@ describe("investigation API", () => {
     expect(completed.body.verdictExplanation).toBe(classifiedVerification("not_reproduced").explanation);
     expect(classify).toHaveBeenCalledWith({
       hypothesis: expect.objectContaining({ summary: "Mock hypothesis for the reported failure." }),
+      generatedTest: {
+        content: stagedContents[0],
+        path: stagedGeneratedTestPath
+      },
       execution: localRunnerOutput().execution,
       evidence: localRunnerOutput().evidence
     });
@@ -501,6 +506,32 @@ describe("investigation API", () => {
     expect(completed.body.generatedTestContent).toBeUndefined();
     expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
     expect(classify).not.toHaveBeenCalled();
+  });
+
+  it("persists only a safe Codex generation failure category", async () => {
+    const scheduler = new ManualWorkflowScheduler();
+    const repositoryWorkspace = createWorkspace();
+    const codexAdapter: CodexAdapter = {
+      async analyze(): Promise<CodexAnalysisResult> {
+        return mockAnalysis();
+      },
+      async generateTest(): Promise<GeneratedTest> {
+        throw new CodexFailure("invalid_generated_test_output");
+      }
+    };
+    const app = createTestApp({ scheduler, codexAdapter, repositoryWorkspace });
+
+    const created = await request(app).post("/api/investigations").send(validRequest);
+    await scheduler.runNext();
+    const completed = await request(app).get(`/api/investigations/${created.body.id}`);
+
+    expect(completed.body).toMatchObject({
+      status: "execution_error",
+      codexFailureCategory: "invalid_generated_test_output"
+    });
+    expect(completed.body.verdictExplanation).toContain("outside the approved policy");
+    expect(JSON.stringify(completed.body)).not.toContain("CodexFailure");
+    expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
   });
 
   it("preserves generated test information when the runner fails", async () => {

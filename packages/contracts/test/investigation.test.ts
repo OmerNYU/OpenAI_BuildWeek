@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   codexAnalysisResultSchema,
+  codexFailureCategorySchema,
   executionResultSchema,
   generatedTestStagingResultSchema,
   investigationRequestSchema,
@@ -26,6 +27,11 @@ describe("investigationRequestSchema", () => {
 });
 
 describe("investigationSchema", () => {
+  it("accepts only the finite sanitized Codex failure categories", () => {
+    expect(codexFailureCategorySchema.safeParse("invalid_generated_test_output").success).toBe(true);
+    expect(codexFailureCategorySchema.safeParse("C:/secret/diagnostic").success).toBe(false);
+  });
+
   it("accepts stored records created before analysis evidence was persisted", () => {
     expect(
       investigationSchema.safeParse({

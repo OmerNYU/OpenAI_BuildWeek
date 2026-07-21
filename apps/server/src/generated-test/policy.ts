@@ -4,7 +4,7 @@ export const stagedGeneratedTestPath = "tests/generated/failspec.generated.spec.
 
 const maximumGeneratedTestBytes = 256 * 1024;
 type CapabilityReceiver = "page" | "request" | "locator" | "expect";
-type CapabilityArguments = "literal" | "local_target" | "selector" | "selector_value" | "value";
+type CapabilityArguments = "literal" | "local_target" | "role_options" | "selector" | "selector_value" | "value";
 type CapabilityResult = "void" | "locator" | "assertion";
 type ExpectationValue = "literal" | "locator" | "page";
 
@@ -38,7 +38,8 @@ export const generatedTestCapabilities: readonly GeneratedTestCapability[] = [
   { receiver: "page", method: "goto", arguments: "local_target", result: "void", interaction: true, minimumArguments: 1, maximumArguments: 1 },
   ...pageSelectorActions.map((method) => ({ receiver: "page" as const, method, arguments: "selector" as const, result: "void" as const, interaction: true as const, minimumArguments: 1, maximumArguments: 1 })),
   ...valueActions.map((method) => ({ receiver: "page" as const, method, arguments: "selector_value" as const, result: "void" as const, interaction: true as const, minimumArguments: 2, maximumArguments: 2 })),
-  ...["getByAltText", "getByLabel", "getByPlaceholder", "getByRole", "getByTestId", "getByText", "getByTitle", "locator"].map((method) => ({ receiver: "page" as const, method, arguments: "value" as const, result: "locator" as const, minimumArguments: 1, maximumArguments: 1 })),
+  ...["getByAltText", "getByLabel", "getByPlaceholder", "getByTestId", "getByText", "getByTitle", "locator"].map((method) => ({ receiver: "page" as const, method, arguments: "value" as const, result: "locator" as const, minimumArguments: 1, maximumArguments: 1 })),
+  { receiver: "page", method: "getByRole", arguments: "role_options", result: "locator", minimumArguments: 1, maximumArguments: 2 },
   ...["fetch", "get", "post", "put", "patch", "delete", "head"].map((method) => ({ receiver: "request" as const, method, arguments: "local_target" as const, result: "void" as const, minimumArguments: 1, maximumArguments: 1 })),
   ...locatorSelectorActions.map((method) => ({ receiver: "locator" as const, method, arguments: "literal" as const, result: "void" as const, interaction: true as const, minimumArguments: 0, maximumArguments: 0 })),
   ...valueActions.map((method) => ({ receiver: "locator" as const, method, arguments: "value" as const, result: "void" as const, interaction: true as const, minimumArguments: 1, maximumArguments: 1 })),
@@ -54,12 +55,22 @@ export const generatedTestPolicyDescription = `
 - Write only direct allowed Playwright calls with literal arguments. Every interaction and assertion must be awaited.
 - Include at least one approved interaction and at least one assertion.
 - Navigation and request targets must be relative or http(s) localhost/127.0.0.1 URLs.
+- page.getByRole may use a second literal options object containing only name and exact.
 - Allowed locator text assertions include toContainText, toHaveText, and toHaveValue.
 - Allowed page calls: ${capabilityMethods("page").map((method) => `page.${method}`).join(", ")}.
 - Allowed request calls: ${capabilityMethods("request").map((method) => `request.${method}`).join(", ")}.
 - Allowed locator calls: ${capabilityMethods("locator").map((method) => `locator.${method}`).join(", ")}.
 - Allowed assertions: ${capabilityMethods("expect").map((method) => `expect(...).${method}`).join(", ")}.
 `.trim();
+
+export const generatedTestPolicyExample = `import { expect, test } from '@playwright/test';
+
+test('describes the reported behavior', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Known label').fill('Known value');
+  await page.getByRole('button', { name: 'Known action' }).click();
+  await expect(page.getByRole('status')).toContainText('Expected result');
+});`;
 
 export function validateGeneratedTestSource(content: string): GeneratedTestSourceValidationResult {
   if (Buffer.from(content, "utf8").toString("utf8") !== content) {
@@ -162,7 +173,30 @@ function capabilityCall(node: ts.Expression): GeneratedTestCapability | undefine
     const target = node.arguments[0] && staticString(node.arguments[0]);
     return target !== undefined && isLocalTarget(target) ? capability : undefined;
   }
+  if (capability.arguments === "role_options" && node.arguments.length === 2 && !isRoleOptions(node.arguments[1]!)) {
+    return undefined;
+  }
   return capability;
+}
+
+function isRoleOptions(node: ts.Expression): boolean {
+  if (!ts.isObjectLiteralExpression(node)) {
+    return false;
+  }
+  const names = new Set<string>();
+  return node.properties.every((property) => {
+    if (!ts.isPropertyAssignment(property) || (!ts.isIdentifier(property.name) && !ts.isStringLiteral(property.name))) {
+      return false;
+    }
+    const name = property.name.text;
+    if (names.has(name)) {
+      return false;
+    }
+    names.add(name);
+    return name === "name"
+      ? staticString(property.initializer) !== undefined
+      : name === "exact" && (property.initializer.kind === ts.SyntaxKind.TrueKeyword || property.initializer.kind === ts.SyntaxKind.FalseKeyword);
+  });
 }
 
 function capabilityReceiver(node: ts.Expression): "page" | "request" | "locator" | undefined {

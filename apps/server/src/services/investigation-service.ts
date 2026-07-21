@@ -3,6 +3,7 @@ import {
   type Investigation,
   type InvestigationRequest,
   type InvestigationStatus,
+  type CodexFailureCategory,
   generatedTestStagingResultSchema,
   runnerOutputSchema,
   verificationResultSchema,
@@ -20,6 +21,7 @@ import {
 import type { InvestigationStore } from "../storage/investigation-store.js";
 import type { WorkflowScheduler } from "../scheduling/workflow-scheduler.js";
 import type { RepositoryWorkspace } from "../repository/repository-workspace.js";
+import { CodexFailure } from "../codex/failure.js";
 
 export type InvestigationRuntimeMode = "mock" | "local";
 
@@ -148,6 +150,7 @@ export class InvestigationService {
       try {
         verification = verificationResultSchema.safeParse(this.verificationClassifier({
           hypothesis: analysis.hypothesis,
+          generatedTest: stagedGeneratedTest,
           execution: runnerOutput.data.execution,
           evidence: runnerOutput.data.evidence
         }));
@@ -178,6 +181,9 @@ export class InvestigationService {
     const investigation = structuredClone(lastPersisted);
     investigation.hypothesis ??= current.hypothesis;
     investigation.analysisEvidence ??= current.analysisEvidence;
+    if (error instanceof CodexFailure) {
+      investigation.codexFailureCategory = error.category;
+    }
     investigation.generatedTestPath ??= current.generatedTestPath;
     investigation.generatedTestContent ??= current.generatedTestContent;
     investigation.execution ??= current.execution;
@@ -189,7 +195,9 @@ export class InvestigationService {
 
     const message = error instanceof WorkflowFailure
       ? error.message
-      : "Investigation workflow failed.";
+      : error instanceof CodexFailure
+        ? codexFailureMessage(error.category)
+        : "Investigation workflow failed.";
     assertTransition(investigation.status, "execution_error");
     investigation.status = "execution_error";
     investigation.updatedAt = new Date().toISOString();
@@ -199,13 +207,27 @@ export class InvestigationService {
       message
     });
     investigation.verdictExplanation = `${message} Review the recorded investigation evidence.`;
-    investigation.recommendedNextStep = "Resolve the reported workflow error and retry the investigation.";
+    investigation.recommendedNextStep = error instanceof CodexFailure
+      ? codexFailureNextStep(error.category)
+      : "Resolve the reported workflow error and retry the investigation.";
     await this.store.save(investigation);
     return investigation;
   }
 }
 
 class WorkflowFailure extends Error {}
+
+function codexFailureMessage(category: CodexFailureCategory): string {
+  if (category === "cli_failed") return "Codex could not complete this investigation.";
+  if (category === "invalid_analysis_output") return "Codex analysis did not meet the required investigation format.";
+  return "Codex generated a test outside the approved policy.";
+}
+
+function codexFailureNextStep(category: CodexFailureCategory): string {
+  return category === "cli_failed"
+    ? "Confirm Codex CLI availability and retry the investigation."
+    : "Retry the investigation to request a corrected Codex response.";
+}
 
 function terminalMessage(verdict: VerificationResult["verdict"]): string {
   if (verdict === "verified") return "Reproduction verified.";

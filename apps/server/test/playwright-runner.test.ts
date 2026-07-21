@@ -175,6 +175,20 @@ describe("controlled Playwright runner", () => {
     expect(JSON.stringify(output)).not.toContain(worktree);
   });
 
+  it("extracts concise expected and received values from a Playwright assertion message", async () => {
+    const worktree = await createWorktree();
+    const reporter = JSON.stringify({
+      suites: [{ specs: [{ title: "generated checkout", tests: [{ results: [{
+        status: "failed",
+        errors: [{ message: "Error: assertion failed\nExpected: Charged total: $24.00\nReceived: Charged total: $12.00\nCall log: verbose details" }]
+      }] }] }] }]
+    });
+
+    await expect(new PlaywrightRunnerAdapter(fakeOperations(reporter)).run(input(worktree))).resolves.toMatchObject({
+      evidence: { expectedValue: "Charged total: $24.00", actualValue: "Charged total: $12.00" }
+    });
+  });
+
   it("uses the reporter file instead of noisy npm stdout", async () => {
     const worktree = await createWorktree();
     const output = await new PlaywrightRunnerAdapter(fakeOperations(report("passed"), {

@@ -87,6 +87,13 @@ export const codexAnalysisResultSchema = z
   });
 export type CodexAnalysisResult = z.infer<typeof codexAnalysisResultSchema>;
 
+export const codexFailureCategorySchema = z.enum([
+  "cli_failed",
+  "invalid_analysis_output",
+  "invalid_generated_test_output"
+]);
+export type CodexFailureCategory = z.infer<typeof codexFailureCategorySchema>;
+
 export const playwrightTestStatusSchema = z.enum([
   "passed",
   "failed",
@@ -219,6 +226,7 @@ export const investigationResultSchema = z.object({
   status: investigationStatusSchema,
   hypothesis: reproductionHypothesisSchema.optional(),
   analysisEvidence: z.array(analysisEvidenceItemSchema).optional(),
+  codexFailureCategory: codexFailureCategorySchema.optional(),
   generatedTestPath: z.string().optional(),
   generatedTestContent: z.string().optional(),
   execution: executionResultSchema.optional(),
