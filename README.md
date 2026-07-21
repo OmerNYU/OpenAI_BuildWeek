@@ -1,8 +1,10 @@
 # FailSpec
 
-FailSpec turns a bug report for a trusted local React or Next.js repository into one evidence-backed Playwright regression test. It is built for the moment when a report says "this is broken" but the team needs a reproducible failure before changing code.
+FailSpec turns a bug report for a trusted local React or Next.js repository into one evidence-backed Playwright regression test. It is built for the moment when a report says “this is broken,” but the team needs a reproducible failure before changing code.
 
-The MVP is deliberately local-first. It does not upload a repository or execute arbitrary remote code.
+The MVP is deliberately local-first. It does not upload the submitted repository or execute arbitrary remote code.
+
+FailSpec was created during OpenAI Build Week 2026 using OpenAI Codex and GPT-5.6.
 
 ## What it does
 
@@ -11,6 +13,71 @@ The MVP is deliberately local-first. It does not upload a repository or execute 
 3. Uses Codex to inspect the repository, form a reproduction hypothesis, and generate one constrained Playwright test.
 4. Stages and runs that test through a controlled runner.
 5. Stores sanitized execution evidence and returns a deterministic verdict: verified, partial evidence, not reproduced, or execution error.
+
+## Judge Quick Start
+
+The fastest way to review FailSpec is deterministic mock mode. It does not require Codex authentication, Git worktree creation, or Playwright browser execution.
+
+Run the following commands from the FailSpec repository root.
+
+### 1. Install dependencies
+
+```bash
+npm ci
+```
+
+### 2. Start the API
+
+macOS or Linux:
+
+```bash
+FAILSPEC_CODEX_MODE=mock npm run dev:server
+```
+
+Windows PowerShell:
+
+```powershell
+$env:FAILSPEC_CODEX_MODE = "mock"
+npm.cmd run dev:server
+```
+
+### 3. Start the frontend in a second terminal
+
+macOS or Linux:
+
+```bash
+npm run dev:web
+```
+
+Windows PowerShell:
+
+```powershell
+npm.cmd run dev:web
+```
+
+### 4. Submit the included demonstration
+
+Open the Vite URL printed in the terminal, normally:
+
+```text
+http://localhost:5173
+```
+
+Provide the absolute path to:
+
+```text
+fixtures/buggy-checkout-app
+```
+
+Use the bug report in:
+
+[`fixtures/buggy-checkout-app/bug-report.md`](fixtures/buggy-checkout-app/bug-report.md)
+
+The mock investigation should complete with a deterministic result showing the investigation timeline, reproduction hypothesis, execution evidence, and verification verdict.
+
+Mock mode demonstrates the product flow but does not run Git preflight, Codex, generated-test staging, or Playwright.
+
+## Architecture
 
 ```mermaid
 flowchart LR
@@ -26,61 +93,148 @@ flowchart LR
   C --> B
 ```
 
+The model proposes how to reproduce the failure, but it does not grade its own work. Final verification is performed by deterministic classification logic operating on sanitized execution evidence.
+
 ## Requirements
+
+### Mock mode
 
 - Node.js `^20.19.0` or `>=22.12.0`
 - npm
-- For a real local investigation: an installed, authenticated Codex CLI and a trusted, clean Git repository that uses React or Next.js with Playwright configured
 
-FailSpec can be explored on macOS, Linux, or Windows anywhere the above requirements are available. The built-in mock mode needs no Codex installation and is the fastest way to review the UI and API flow.
+### Real local investigations
+
+Real local mode additionally requires:
+
+- Git
+- An installed and authenticated OpenAI Codex CLI
+- A trusted, clean local Git repository
+- A supported React or Next.js project
+- Playwright configured in the submitted repository
+- Chromium installed for Playwright execution
+
+FailSpec can be explored on macOS, Linux, or Windows wherever these requirements are available.
+
+The built-in mock mode requires no Codex installation and is the fastest way to review the UI and API flow.
 
 ## Install and run
 
-From a clean checkout:
+From a clean FailSpec checkout:
 
 ```bash
 npm ci
+```
+
+Start the server:
+
+```bash
 npm run dev:server
 ```
 
-In a second terminal:
+In a second terminal, start the frontend:
 
 ```bash
 npm run dev:web
 ```
 
-Open the Vite URL printed by the web server, normally `http://localhost:5173`.
+On Windows PowerShell, use:
 
-### Run modes
+```powershell
+npm.cmd run dev:server
+```
 
-Mock mode is the default. It demonstrates the investigation flow without Git preflight, Codex, generated-test staging, or Playwright execution.
+and, in a second terminal:
 
-To set mock mode explicitly:
+```powershell
+npm.cmd run dev:web
+```
+
+Open the Vite URL printed by the web server, normally:
+
+```text
+http://localhost:5173
+```
+
+## Run modes
+
+### Mock mode
+
+Mock mode is the default. It demonstrates the investigation lifecycle without Git preflight, Codex, generated-test staging, or Playwright execution.
+
+Set it explicitly on macOS or Linux:
 
 ```bash
 FAILSPEC_CODEX_MODE=mock npm run dev:server
 ```
 
-For a real local investigation, start the server in local mode:
+On Windows PowerShell:
+
+```powershell
+$env:FAILSPEC_CODEX_MODE = "mock"
+npm.cmd run dev:server
+```
+
+### Real local mode
+
+Install the Playwright Chromium browser before running a real investigation:
+
+```bash
+npx playwright install chromium
+```
+
+Start the server in local mode on macOS or Linux:
 
 ```bash
 FAILSPEC_CODEX_MODE=local npm run dev:server
 ```
 
-In Windows PowerShell, set the variable first:
+On Windows PowerShell:
 
 ```powershell
 $env:FAILSPEC_CODEX_MODE = "local"
-npm run dev:server
+npm.cmd run dev:server
 ```
 
-Local mode is only for trusted local repositories. It runs preflight, creates a FailSpec-owned isolated worktree, asks Codex for analysis and one generated test, runs the test through the controlled runner, cleans up its worktree, and classifies the resulting sanitized evidence.
+Start the frontend in a second terminal:
+
+```bash
+npm run dev:web
+```
+
+On Windows PowerShell:
+
+```powershell
+npm.cmd run dev:web
+```
+
+Local mode is only for trusted local repositories. It:
+
+1. Performs repository preflight.
+2. Creates a FailSpec-owned isolated Git worktree.
+3. Uses Codex to analyze the repository and propose one generated test.
+4. Stages the test through a constrained validation boundary.
+5. Executes it through the controlled Playwright runner.
+6. Collects and sanitizes execution evidence.
+7. Cleans up the investigation worktree.
+8. Produces a deterministic verification verdict.
+
+The submitted repository is not modified directly. The generated test exists only inside the isolated investigation worktree.
 
 ## Try the included sample
 
-The repository includes `fixtures/buggy-checkout-app`, an intentionally broken checkout application. Its bug report is in [fixtures/buggy-checkout-app/bug-report.md](fixtures/buggy-checkout-app/bug-report.md): selecting quantity `2` still produces a `$12.00` charge instead of `$24.00`.
+The repository includes `fixtures/buggy-checkout-app`, an intentionally broken checkout application.
 
-Do not submit the tracked fixture directly in local mode. Create a clean temporary copy, initialise and commit it as a local Git repository, install its dependencies, then submit that temporary path in FailSpec. The complete safe walkthrough, including the reference test and cleanup, is in [docs/demo-script.md](docs/demo-script.md).
+Its bug report is available at:
+
+[`fixtures/buggy-checkout-app/bug-report.md`](fixtures/buggy-checkout-app/bug-report.md)
+
+The reported failure is that selecting quantity `2` still produces a `$12.00` charge instead of `$24.00`.
+
+Do not submit the tracked fixture directly in real local mode. Create a clean temporary copy, initialise and commit it as a local Git repository, install its dependencies, and then submit that temporary path through FailSpec.
+
+The complete walkthrough, including fixture preparation, reference testing, local execution, and cleanup, is available in:
+
+[`docs/demo-script.md`](docs/demo-script.md)
 
 For a deterministic repository-wide smoke check that does not call the Codex CLI or launch a browser:
 
@@ -88,7 +242,15 @@ For a deterministic repository-wide smoke check that does not call the Codex CLI
 npm run smoke
 ```
 
+On Windows PowerShell:
+
+```powershell
+npm.cmd run smoke
+```
+
 ## Verification
+
+Run the repository validation suite:
 
 ```bash
 npm run lint
@@ -97,29 +259,75 @@ npm test
 npm run build
 ```
 
-The test suite covers typed contracts, the investigation lifecycle, Codex-output validation, generated-test policy checks, controlled execution evidence, result rendering, and the fixture smoke flow.
+On Windows PowerShell:
+
+```powershell
+npm.cmd run lint
+npm.cmd run typecheck
+npm.cmd test
+npm.cmd run build
+```
+
+The test suite covers:
+
+- Typed shared contracts
+- Investigation lifecycle transitions
+- Codex structured-output validation
+- Generated-test policy enforcement
+- Controlled execution and evidence collection
+- Deterministic verification classification
+- Result rendering
+- The fixture smoke workflow
 
 ## Architecture and repository layout
 
 - `apps/web`: React and Vite intake, progress, and results UI.
-- `apps/server`: Express API, runtime dependency construction, Codex boundary, repository preparation, staging, and controlled runner.
-- `packages/contracts`: shared request, lifecycle, evidence, and result types.
-- `packages/core`: deterministic lifecycle and verification logic.
-- `fixtures/buggy-checkout-app`: the disposable demo fixture and reference Playwright test.
+- `apps/server`: Express API, runtime dependency construction, Codex boundary, repository preparation, staging, controlled execution, and persistence.
+- `packages/contracts`: Shared request, lifecycle, evidence, and result types.
+- `packages/core`: Deterministic lifecycle and verification logic.
+- `fixtures/buggy-checkout-app`: Disposable demo fixture and manually authored reference Playwright test.
 
-See [docs/codex-workflow.md](docs/codex-workflow.md) for the constrained generated-test contract and [docs/decisions.md](docs/decisions.md) for MVP decisions and boundaries.
+See [`docs/codex-workflow.md`](docs/codex-workflow.md) for the constrained generated-test contract and [`docs/decisions.md`](docs/decisions.md) for the MVP architecture decisions and boundaries.
 
-## AI use
+## How Codex and GPT-5.6 were used
 
-FailSpec was developed with OpenAI Codex as a pair-programming collaborator. Codex was used throughout the build to inspect code, propose and implement narrowly scoped changes, write and review tests, run verification, and help maintain this documentation.
+FailSpec was developed with OpenAI Codex as a pair-programming collaborator.
 
-GPT-5.6 was used within those Codex sessions for technical reasoning, debugging, design discussion, and documentation iteration. The team reviewed the resulting code and behaviour, made the product decisions, and kept the execution surface intentionally constrained. Codex does not automatically fix source code or create pull requests for a user.
+Codex accelerated the project by helping the team:
+
+- Explore the monorepo and trace investigation lifecycle boundaries.
+- Implement narrowly scoped backend, frontend, runner, and verification changes.
+- Build strict validation for structured Codex output.
+- Create positive, negative, and adversarial tests for the constrained generated-test grammar.
+- Run focused and repository-wide verification.
+- Diagnose cross-platform execution behaviour, including Windows npm process launching.
+- Review documentation and keep implementation details aligned with the architecture.
+
+GPT-5.6 was used within the Codex workflow for technical reasoning, debugging, architecture discussion, classifier-policy analysis, and documentation iteration.
+
+The team remained responsible for the key product and engineering decisions, including:
+
+- Choosing a local-first architecture.
+- Running investigations inside isolated Git worktrees.
+- Separating model reasoning from deterministic verdict classification.
+- Constraining generated Playwright tests instead of permitting arbitrary execution.
+- Refusing to treat every generated test failure or non-zero exit code as proof that a bug was reproduced.
+
+Codex does not automatically modify the submitted source repository, fix the reported bug, create a pull request, or determine the final verdict.
 
 ## MVP boundaries
 
 - Trusted local React or Next.js repositories only.
 - One generated Playwright regression test per investigation.
 - No hosted SaaS, authentication, team accounts, GitHub OAuth, or automatic bug fixes.
-- A generated test or non-zero process exit alone is not proof of a reproduced bug. The displayed verdict comes from structured execution evidence.
+- A generated test failure or non-zero process exit alone is not proof of a reproduced bug.
+- A `verified` verdict requires structured assertion evidence tied to the staged generated test and reproduction hypothesis.
+- When that evidence is insufficient, FailSpec returns partial evidence, not reproduced, or execution error according to the observed execution facts.
 
-Runtime investigation records are stored locally under `.failspec/investigations/`. Scheduled work is in-process only, so restarting the server does not recover an in-flight investigation.
+Runtime investigation records are stored locally under:
+
+```text
+.failspec/investigations/
+```
+
+Scheduled work is currently in-process only. Restarting the server does not recover an in-flight investigation.
