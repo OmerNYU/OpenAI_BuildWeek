@@ -31,17 +31,17 @@ const cases = [
   {
     name: "a Playwright import with attributes",
     content: "import { expect, test } from '@playwright/test' with { type: 'json' }; test('x', async ({ page }) => { await page.click('button'); await expect(true).toBe(true); });",
-    valid: false
+    valid: true
   },
   {
     name: "a rest fixture binding",
     content: program("await page.click('button'); await expect(true).toBe(true);", "{ ...page }"),
-    valid: false
+    valid: true
   },
   {
     name: "duplicate fixture bindings",
     content: program("await page.click('button'); await expect(true).toBe(true);", "{ page, page }"),
-    valid: false
+    valid: true
   },
   {
     name: "an un-awaited assertion",

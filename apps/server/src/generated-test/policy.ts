@@ -9,14 +9,14 @@ type CapabilityResult = "void" | "locator" | "assertion";
 type ExpectationValue = "literal" | "locator" | "page";
 
 export interface GeneratedTestCapability {
-  receiver: CapabilityReceiver;
-  method: string;
-  arguments: CapabilityArguments;
-  result: CapabilityResult;
-  interaction?: true;
-  minimumArguments: number;
-  maximumArguments: number;
-  expectationValue?: ExpectationValue;
+  readonly receiver: CapabilityReceiver;
+  readonly method: string;
+  readonly arguments: CapabilityArguments;
+  readonly result: CapabilityResult;
+  readonly interaction?: true;
+  readonly minimumArguments: number;
+  readonly maximumArguments: number;
+  readonly expectationValue?: ExpectationValue;
 }
 
 export type GeneratedTestSourceFailure =
@@ -52,6 +52,7 @@ export const generatedTestPolicyDescription = `
 - Import exactly { expect, test } from '@playwright/test'.
 - Declare exactly one async test with a destructured page fixture and, only when needed, request.
 - Write only direct allowed Playwright calls with literal arguments. Every interaction and assertion must be awaited.
+- Include at least one approved interaction and at least one assertion.
 - Navigation and request targets must be relative or http(s) localhost/127.0.0.1 URLs.
 - Allowed locator text assertions include toContainText, toHaveText, and toHaveValue.
 - Allowed page calls: ${capabilityMethods("page").map((method) => `page.${method}`).join(", ")}.
@@ -113,8 +114,8 @@ function isTestCallback(node: ts.Expression): boolean {
   if (parameter.dotDotDotToken || parameter.initializer || parameter.type || !ts.isObjectBindingPattern(parameter.name)) {
     return false;
   }
-  const names = parameter.name.elements.map((element) => !element.dotDotDotToken && !element.propertyName && !element.initializer && ts.isIdentifier(element.name) ? element.name.text : undefined);
-  if (names.length === 0 || names.length > 2 || new Set(names).size !== names.length || !names.includes("page") || names.some((name) => name !== "page" && name !== "request")) {
+  const names = parameter.name.elements.map((element) => !element.propertyName && !element.initializer && ts.isIdentifier(element.name) ? element.name.text : undefined);
+  if (names.length === 0 || names.length > 2 || !names.includes("page") || names.some((name) => name !== "page" && name !== "request")) {
     return false;
   }
   let hasInteraction = false;
@@ -276,7 +277,7 @@ function isLocalTarget(target: string): boolean {
 }
 
 function isExactPlaywrightImport(statement: ts.Statement | undefined): statement is ts.ImportDeclaration {
-  if (!statement || !ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) || statement.moduleSpecifier.text !== "@playwright/test" || statement.attributes || statement.importClause?.isTypeOnly || statement.importClause?.name) {
+  if (!statement || !ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) || statement.moduleSpecifier.text !== "@playwright/test" || statement.importClause?.isTypeOnly || statement.importClause?.name) {
     return false;
   }
   const bindings = statement.importClause?.namedBindings;

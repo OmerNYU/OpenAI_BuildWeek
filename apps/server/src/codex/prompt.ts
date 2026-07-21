@@ -40,7 +40,8 @@ export function buildTestGenerationPrompt(
 Rules:
 - Inspect repository files in read-only mode.
 - Do not modify production code.
-- Reuse the repository's existing Playwright conventions.
+- Reuse selectors, routes, and behavioral expectations from the repository only when they are compatible with this policy.
+- This policy overrides incompatible repository helpers, custom fixtures, variables, aliases, page objects, and conventions.
 - Generate exactly one minimal Playwright regression test.
 - Do not claim the bug is reproduced. Test execution and verdict classification happen elsewhere.
 ${generatedTestPolicyDescription}

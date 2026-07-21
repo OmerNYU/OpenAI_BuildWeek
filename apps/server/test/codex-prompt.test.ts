@@ -50,5 +50,8 @@ describe("Codex prompts", () => {
     expect(prompt).toContain("Allowed locator text assertions include toContainText");
     expect(prompt).toContain("page.goto");
     expect(prompt).toContain("expect(...).toContainText");
+    expect(prompt).toContain("Reuse selectors, routes, and behavioral expectations from the repository only when they are compatible with this policy.");
+    expect(prompt).toContain("This policy overrides incompatible repository helpers, custom fixtures, variables, aliases, page objects, and conventions.");
+    expect(prompt).toContain("Include at least one approved interaction and at least one assertion.");
   });
 });
