@@ -48,10 +48,10 @@ function classify(value: VerificationInput): VerificationResult {
 
 describe("verification classification", () => {
   it("classifies a normally passed generated test as not reproduced", () => {
-    expect(classify(input())).toMatchObject({
-      verdict: "not_reproduced",
-      supportingSignals: [{ type: "test_status", message: "Playwright test status: passed." }]
-    });
+    const result = classify(input());
+
+    expect(result.verdict).toBe("not_reproduced");
+    expect(result.supportingSignals).toContainEqual({ type: "test_status", message: "Playwright test status: passed." });
   });
 
   it.each([
@@ -68,9 +68,58 @@ describe("verification classification", () => {
     expect(classify(value).verdict).toBe("execution_error");
   });
 
+  it.each([
+    [
+      "a controlled execution timeout",
+      input({
+        execution: {
+          command: "npx playwright test --secret-command",
+          exitCode: 0,
+          timedOut: true,
+          stdout: "raw runner stdout",
+          stderr: "raw runner stderr"
+        }
+      }),
+      [
+        { type: "execution_timeout", message: "Controlled execution timed out." },
+        { type: "exit_code", message: "Controlled execution exit code: 0." }
+      ]
+    ],
+    [
+      "a passed status with a non-zero exit",
+      input({ execution: { exitCode: 1 } }),
+      [{ type: "exit_code", message: "Controlled execution exit code: 1." }]
+    ],
+    [
+      "a failed status with a zero exit",
+      input({ execution: { exitCode: 0 }, evidence: { testStatus: "failed" } }),
+      [{ type: "exit_code", message: "Controlled execution exit code: 0." }]
+    ],
+    [
+      "a missing exit code",
+      input({ execution: { exitCode: null } }),
+      [{ type: "exit_code", message: "Controlled execution did not report an exit code." }]
+    ]
+  ])("exposes safe decisive facts for %s", (_name, value, expectedSignals) => {
+    const result = classify(value);
+
+    expect(result.verdict).toBe("execution_error");
+    expect(result.supportingSignals).toEqual(expect.arrayContaining(expectedSignals));
+    for (const rawValue of ["npx playwright test --secret-command", "raw runner stdout", "raw runner stderr"]) {
+      expect(result.supportingSignals.map((signal) => signal.message)).not.toContain(rawValue);
+    }
+  });
+
   it("classifies normally completed failed and skipped tests as partial", () => {
     expect(classify(input({ execution: { exitCode: 1 }, evidence: { testStatus: "failed" } })).verdict).toBe("partial");
     expect(classify(input({ execution: { exitCode: 0 }, evidence: { testStatus: "skipped" } })).verdict).toBe("partial");
+  });
+
+  it("explains a skipped test without claiming its body completed", () => {
+    const result = classify(input({ execution: { exitCode: 0 }, evidence: { testStatus: "skipped" } }));
+
+    expect(result.explanation).toBe("The generated test was skipped, so the reported bug could not be verified.");
+    expect(result.explanation).not.toContain("completed");
   });
 
   it("keeps optional evidence out of verdict selection while exposing bounded supporting signals", () => {
@@ -117,7 +166,7 @@ describe("verification classification", () => {
     }));
 
     expect(result.verdict).toBe("partial");
-    expect(result.supportingSignals).toHaveLength(8);
+    expect(result.supportingSignals).toHaveLength(10);
     expect(result.supportingSignals.find((signal) => signal.type === "assertion_failure")?.message).toHaveLength(2_000);
   });
 

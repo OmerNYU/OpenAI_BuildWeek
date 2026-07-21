@@ -12,7 +12,7 @@ export interface VerificationInput {
   evidence: ExecutionEvidence;
 }
 
-const maximumSupportingSignals = 8;
+const maximumSupportingSignals = 10;
 const maximumSignalTextLength = 2_000;
 
 export function classifyVerification(input: VerificationInput): VerificationResult {
@@ -21,8 +21,8 @@ export function classifyVerification(input: VerificationInput): VerificationResu
   const verdict = classifyVerdict(input.execution, input.evidence);
   return {
     verdict,
-    ...verdictDetails(verdict),
-    supportingSignals: supportingSignals(input.evidence)
+    ...verdictDetails(verdict, input.evidence),
+    supportingSignals: supportingSignals(input.execution, input.evidence)
   };
 }
 
@@ -50,7 +50,10 @@ function classifyVerdict(execution: ExecutionResult, evidence: ExecutionEvidence
   return status === "passed" ? "not_reproduced" : "partial";
 }
 
-function verdictDetails(verdict: VerificationResult["verdict"]): Pick<VerificationResult, "explanation" | "recommendedNextStep"> {
+function verdictDetails(
+  verdict: VerificationResult["verdict"],
+  evidence: ExecutionEvidence
+): Pick<VerificationResult, "explanation" | "recommendedNextStep"> {
   if (verdict === "not_reproduced") {
     return {
       explanation: "The generated test completed without reproducing the expected failure.",
@@ -59,7 +62,9 @@ function verdictDetails(verdict: VerificationResult["verdict"]): Pick<Verificati
   }
   if (verdict === "partial") {
     return {
-      explanation: "The generated test completed, but the available evidence cannot verify the reported bug.",
+      explanation: evidence.testStatus === "skipped"
+        ? "The generated test was skipped, so the reported bug could not be verified."
+        : "The generated test failed, but the available evidence cannot safely verify the reported bug.",
       recommendedNextStep: "Review the recorded execution evidence and refine the reproduction test."
     };
   }
@@ -69,7 +74,7 @@ function verdictDetails(verdict: VerificationResult["verdict"]): Pick<Verificati
   };
 }
 
-function supportingSignals(evidence: ExecutionEvidence): VerificationSignal[] {
+function supportingSignals(execution: ExecutionResult, evidence: ExecutionEvidence): VerificationSignal[] {
   const signals: VerificationSignal[] = [];
   const add = (type: string, message: string | undefined) => {
     if (message && signals.length < maximumSupportingSignals) {
@@ -77,6 +82,10 @@ function supportingSignals(evidence: ExecutionEvidence): VerificationSignal[] {
     }
   };
 
+  add("execution_timeout", execution.timedOut ? "Controlled execution timed out." : undefined);
+  add("exit_code", execution.exitCode === null
+    ? "Controlled execution did not report an exit code."
+    : `Controlled execution exit code: ${execution.exitCode}.`);
   add("test_status", `Playwright test status: ${evidence.testStatus ?? "missing"}.`);
   add("test_title", evidence.testTitle && `Generated test: ${evidence.testTitle}`);
   add("assertion_failure", evidence.assertionFailureMessage);
