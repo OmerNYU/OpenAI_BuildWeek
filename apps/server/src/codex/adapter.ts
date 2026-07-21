@@ -11,7 +11,7 @@ export class CodexInvestigationAdapter implements CodexAdapter {
   constructor(private readonly client: CodexJsonlClient) {}
 
   async analyze(request: InvestigationRequest): Promise<CodexAnalysisResult> {
-    const output = await this.runOnce(request.repositoryPath, buildAnalysisPrompt(request), (response) =>
+    const output = await this.runWithOneRetry(request, buildAnalysisPrompt(request), (response) =>
       parseCodexAnalysisOutput(JSON.parse(response))
     );
 

@@ -89,7 +89,7 @@ describe("CodexInvestigationAdapter", () => {
     expect(calls[2]?.prompt).toContain("disallowed_api");
   });
 
-  it("does not retry invalid analysis output", async () => {
+  it("retries invalid analysis output once", async () => {
     const calls: Array<{ cwd: string; prompt: string }> = [];
     const responses = [{ hypothesis: {}, evidence: [] }, analysis];
     const client = new CodexJsonlClient({
@@ -100,11 +100,12 @@ describe("CodexInvestigationAdapter", () => {
     });
     const adapter = new CodexInvestigationAdapter(client);
 
-    await expect(adapter.analyze(request)).rejects.toThrow();
-    expect(calls).toHaveLength(1);
+    await expect(adapter.analyze(request)).resolves.toEqual(analysis);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.prompt).toContain("Your previous response was invalid");
   });
 
-  it("rejects analysis with a missing evidence field without retrying", async () => {
+  it("rejects analysis when its one retry still has a missing evidence field", async () => {
     const calls: Array<{ cwd: string; prompt: string }> = [];
     const client = new CodexJsonlClient({
       async execute(input) {
@@ -115,6 +116,6 @@ describe("CodexInvestigationAdapter", () => {
     const adapter: CodexAdapter = new CodexInvestigationAdapter(client);
 
     await expect(adapter.analyze(request)).rejects.toThrow();
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
   });
 });

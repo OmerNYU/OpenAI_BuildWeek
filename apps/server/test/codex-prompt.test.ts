@@ -29,6 +29,7 @@ describe("Codex prompts", () => {
     expect(prompt).toContain("preflighted isolated worktree");
     expect(prompt).toContain("Playwright config, test directory, start command, base URL");
     expect(prompt).toContain("existing Playwright test examples");
+    expect(prompt).toContain("Every evidence sourcePath must exactly match a hypothesis relevantFiles path.");
     expect(prompt).toContain("Checkout validation is missing");
     expect(prompt).toContain("Browser console is clean.");
     expect(prompt).toContain('"evidence"');

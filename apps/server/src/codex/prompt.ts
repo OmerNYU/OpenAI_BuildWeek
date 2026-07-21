@@ -10,6 +10,7 @@ Rules:
 - Inspect repository files in read-only mode.
 - Do not modify production code.
 - Do not claim the bug is reproduced. Test execution and verdict classification happen elsewhere.
+- Every evidence sourcePath must exactly match a hypothesis relevantFiles path.
 
 Repository-test context:
 ${repositoryTestContext}
