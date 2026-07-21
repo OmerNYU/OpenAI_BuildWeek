@@ -41,4 +41,17 @@ describe("Codex prompts", () => {
     expect(prompt).toContain("Checkout does not show the validation error.");
     expect(prompt).toContain('"generatedTestContent"');
   });
+
+  it("states the approved generated-test grammar", () => {
+    const prompt = buildTestGenerationPrompt(request, hypothesis);
+
+    expect(prompt).toContain("Import exactly { expect, test } from '@playwright/test'.");
+    expect(prompt).toContain("Every interaction and assertion must be awaited.");
+    expect(prompt).toContain("Allowed locator text assertions include toContainText");
+    expect(prompt).toContain("page.goto");
+    expect(prompt).toContain("expect(...).toContainText");
+    expect(prompt).toContain("Reuse selectors, routes, and behavioral expectations from the repository only when they are compatible with this policy.");
+    expect(prompt).toContain("This policy overrides incompatible repository helpers, custom fixtures, variables, aliases, page objects, and conventions.");
+    expect(prompt).toContain("Include at least one approved interaction and at least one assertion.");
+  });
 });
