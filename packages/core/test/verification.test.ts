@@ -155,9 +155,12 @@ describe("verification classification", () => {
 
   it.each([
     ["a URI-scheme path", "file:///private/failspec/worktree/trace.zip"],
+    ["a URI-scheme Windows path", "file://C:/Users/hassan/worktree/trace.zip"],
+    ["an HTTPS path", "https://example.com/trace.zip"],
     ["a slash-rooted path", "/private/failspec/worktree/trace.zip"],
     ["a backslash-rooted path", "\\\\server\\share\\trace.zip"],
     ["a Windows drive path", "C:\\Users\\hassan\\trace.zip"],
+    ["a Windows drive path with slash separators", "C:/Users/hassan/worktree/trace.zip"],
     ["a slash traversal path", "test-results/../secret.zip"],
     ["a backslash traversal path", "test-results\\..\\secret.zip"]
   ])("omits %s from every path-derived signal", (_description, unsafePath) => {
@@ -183,7 +186,11 @@ describe("verification classification", () => {
       evidence: {
         testStatus: "failed",
         failureLocation: { file: "tests/checkout.spec.ts", line: 24, column: 9 },
-        artifactPaths: ["test-results/trace.zip", ".failspec/runner/artifacts/screenshot.png"]
+        artifactPaths: [
+          "test-results/trace.zip",
+          ".failspec/runner/artifacts/screenshot.png",
+          "screenshots/result..old.png"
+        ]
       }
     }));
 
@@ -193,7 +200,8 @@ describe("verification classification", () => {
     });
     expect(result.supportingSignals.filter((signal) => signal.type === "artifact_path")).toEqual([
       { type: "artifact_path", message: "test-results/trace.zip" },
-      { type: "artifact_path", message: ".failspec/runner/artifacts/screenshot.png" }
+      { type: "artifact_path", message: ".failspec/runner/artifacts/screenshot.png" },
+      { type: "artifact_path", message: "screenshots/result..old.png" }
     ]);
   });
 
