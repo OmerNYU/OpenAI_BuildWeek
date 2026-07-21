@@ -51,6 +51,12 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 
 .result-error { border-color: #9b1c1c; }
 
+.analysis-evidence { border-top: 1px solid #d9e1e8; margin-top: 1rem; padding-top: 1rem; }
+
+.analysis-evidence-intro { color: #52606d; }
+
+.analysis-evidence-list { padding-left: 1.4rem; }
+
 @media (max-width: 640px) {
   .form-grid { grid-template-columns: 1fr; }
 }
