@@ -451,6 +451,7 @@ describe("investigation API", () => {
   it("records execution_error without a hypothesis when analysis fails", async () => {
     const scheduler = new ManualWorkflowScheduler();
     const repositoryWorkspace = createWorkspace();
+    const classify = vi.fn(mockVerificationClassifier);
     const codexAdapter: CodexAdapter = {
       async analyze(): Promise<CodexAnalysisResult> {
         throw new Error("analysis failed");
@@ -460,7 +461,7 @@ describe("investigation API", () => {
         throw new Error("not reached");
       }
     };
-    const app = createTestApp({ scheduler, codexAdapter, repositoryWorkspace });
+    const app = createTestApp({ scheduler, codexAdapter, repositoryWorkspace, verificationClassifier: classify });
 
     const created = await request(app).post("/api/investigations").send(validRequest);
     expect(created.body.status).toBe("created");
@@ -471,11 +472,13 @@ describe("investigation API", () => {
     expect(completed.body.timeline.at(-1).status).toBe("execution_error");
     expect(completed.body.hypothesis).toBeUndefined();
     expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
+    expect(classify).not.toHaveBeenCalled();
   });
 
   it("preserves the hypothesis when test generation fails", async () => {
     const scheduler = new ManualWorkflowScheduler();
     const repositoryWorkspace = createWorkspace();
+    const classify = vi.fn(mockVerificationClassifier);
     const codexAdapter: CodexAdapter = {
       async analyze(): Promise<CodexAnalysisResult> {
         return mockAnalysis();
@@ -485,7 +488,7 @@ describe("investigation API", () => {
         throw new Error("generation failed");
       }
     };
-    const app = createTestApp({ scheduler, codexAdapter, repositoryWorkspace });
+    const app = createTestApp({ scheduler, codexAdapter, repositoryWorkspace, verificationClassifier: classify });
 
     const created = await request(app).post("/api/investigations").send(validRequest);
     expect(created.body.status).toBe("created");
@@ -497,11 +500,13 @@ describe("investigation API", () => {
     expect(completed.body.analysisEvidence).toEqual(mockAnalysis().evidence);
     expect(completed.body.generatedTestContent).toBeUndefined();
     expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
+    expect(classify).not.toHaveBeenCalled();
   });
 
   it("preserves generated test information when the runner fails", async () => {
     const scheduler = new ManualWorkflowScheduler();
     const repositoryWorkspace = createWorkspace();
+    const classify = vi.fn(mockVerificationClassifier);
     const mockCodexAdapter = new MockCodexAdapter();
     const codexAdapter: CodexAdapter = {
       async analyze(): Promise<CodexAnalysisResult> {
@@ -523,7 +528,8 @@ describe("investigation API", () => {
       runnerAdapter,
       repositoryWorkspace,
       generatedTestStager: successfulGeneratedTestStager,
-      mode: "local"
+      mode: "local",
+      verificationClassifier: classify
     });
 
     const created = await request(app).post("/api/investigations").send(validRequest);
@@ -539,6 +545,7 @@ describe("investigation API", () => {
     expect(completed.body.execution).toBeUndefined();
     expect(completed.body.executionEvidence).toBeUndefined();
     expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
+    expect(classify).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -580,6 +587,7 @@ describe("investigation API", () => {
   it("fails closed when a runner returns malformed output", async () => {
     const scheduler = new ManualWorkflowScheduler();
     const repositoryWorkspace = createWorkspace();
+    const classify = vi.fn(mockVerificationClassifier);
     const runnerAdapter: RunnerAdapter = {
       async run(_input: RunnerInput): Promise<RunnerOutput> {
         void _input;
@@ -592,7 +600,7 @@ describe("investigation API", () => {
       generatedTestStager: successfulGeneratedTestStager,
       runnerAdapter,
       mode: "local",
-      verificationClassifier: () => classifiedVerification("execution_error")
+      verificationClassifier: classify
     });
 
     const created = await request(app).post("/api/investigations").send(validRequest);
@@ -605,6 +613,7 @@ describe("investigation API", () => {
     expect(completed.body.executionEvidence).toBeUndefined();
     expect(completed.body.verdictExplanation).toContain("returned invalid results");
     expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
+    expect(classify).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -650,7 +659,14 @@ describe("investigation API", () => {
     const runnerAdapter = new MockRunnerAdapter();
     const analyze = vi.spyOn(codexAdapter, "analyze");
     const run = vi.spyOn(runnerAdapter, "run");
-    const app = createTestApp({ scheduler, repositoryWorkspace, codexAdapter, runnerAdapter });
+    const classify = vi.fn(mockVerificationClassifier);
+    const app = createTestApp({
+      scheduler,
+      repositoryWorkspace,
+      codexAdapter,
+      runnerAdapter,
+      verificationClassifier: classify
+    });
 
     const created = await request(app).post("/api/investigations").send(validRequest);
     await scheduler.runNext();
@@ -662,6 +678,7 @@ describe("investigation API", () => {
     expect(analyze).not.toHaveBeenCalled();
     expect(run).not.toHaveBeenCalled();
     expect(repositoryWorkspace.cleanup).not.toHaveBeenCalled();
+    expect(classify).not.toHaveBeenCalled();
   });
 
   it("does not verify when workspace cleanup fails after the runner succeeds", async () => {
@@ -669,11 +686,13 @@ describe("investigation API", () => {
     const repositoryWorkspace = createWorkspace({
       cleanup: { status: "failed", message: "cleanup internals" }
     });
+    const classify = vi.fn(mockVerificationClassifier);
     const app = createTestApp({
       scheduler,
       repositoryWorkspace,
       generatedTestStager: successfulGeneratedTestStager,
-      mode: "local"
+      mode: "local",
+      verificationClassifier: classify
     });
 
     const created = await request(app).post("/api/investigations").send(validRequest);
@@ -684,9 +703,11 @@ describe("investigation API", () => {
     expect(completed.body.timeline.map((event: { status: string }) => event.status)).not.toContain("verified");
     expect(completed.body.execution).toEqual(mockExecution());
     expect(completed.body.executionEvidence).toEqual(mockRunnerOutput().evidence);
+    expect(completed.body.verification).toBeUndefined();
     expect(completed.body.verdictExplanation).toContain("could not be cleaned up safely");
     expect(JSON.stringify(completed.body)).not.toContain("cleanup internals");
     expect(repositoryWorkspace.cleanup).toHaveBeenCalledTimes(1);
+    expect(classify).not.toHaveBeenCalled();
   });
 
   it("attempts cleanup once and keeps workflow failures sanitized when both steps fail", async () => {
